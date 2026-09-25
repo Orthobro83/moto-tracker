@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<link rel="stylesheet" href="leaflet.css">
+<style>
+  html,body,#map{height:100%;margin:0;background:#11141a}
+  .leaflet-container{background:#11141a;font:13px -apple-system,Roboto,sans-serif}
+  .leaflet-control-attribution{background:rgba(17,20,26,.7);color:#6b7480;font-size:9px}
+  .leaflet-control-attribution a{color:#6b7480}
+  .speedbub{background:rgba(17,20,26,.9);border:1px solid #2a2f37;border-radius:9px;
+    padding:3px 9px;font:13px ui-monospace,Menlo,monospace;color:#e8eaed;white-space:nowrap}
+  .speedbub.stopped{color:#ffb020;border-color:#ffb020}
+  /* Nothing heard for a minute: not known to be stopped, only not heard (2026-09-24). */
+  .speedbub.lost{color:#8b949e;border-color:#3a4048}
+  .leaflet-tooltip-own{background:transparent;border:0;box-shadow:none;padding:0}
+  .rider-dot{width:16px;height:16px;border-radius:50%;background:#4da3ff;border:2px solid #fff;
+    box-shadow:0 0 0 4px rgba(77,163,255,.28)}
+  .rider-dot.red{background:#ff4d4f;box-shadow:0 0 0 6px rgba(255,77,79,.35)}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="leaflet.js"></script>
+<script>
+/*
+ * The Observer's map, inside the app.
+ *
+ * The TomTom key is handed in by the app after it has fetched it from the relay —
+ * it is never in this file, never in the APK, and never reaches the VPS as traffic:
+ * these tiles come straight from TomTom to this phone (Jack, 2026-09-16).
+ */
+var moto = (function () {
+  var map, base, traffic, marker, bubble, trail, following = true, trafficAt = 0;
+  // Counted so the app can say why a map is blank rather than just showing black
+  // (2026-09-20: it drew nothing on the phone and nothing was written down).
+  var tiles = { loaded: 0, failed: 0 };
+
+  function start(key, heightPx) {
+    if (window.__motoReady) return 'already started';
+    if (typeof L === 'undefined') return 'leaflet did not load';
+    try {
+      build(key, heightPx);
+    } catch (e) {
+      window.__motoError = String(e && e.message || e);
+      return 'failed: ' + window.__motoError;
+    }
+    return 'ok';
+  }
+
+  function build(key, heightPx) {
+    // The app tells us how tall it is, because this page cannot find out for
+    // itself: inside a scrolling Android view its own viewport measures zero, and
+    // then height:100% is zero too. On 2026-09-20 the map ran perfectly — tiles
+    // loaded, rider dot drawn — into a box 376 x 0, which shows as nothing at all.
+    if (heightPx > 0) {
+      var px = heightPx + 'px';
+      document.documentElement.style.height = px;
+      document.body.style.height = px;
+      document.getElementById('map').style.height = px;
+    }
+    map = L.map('map', { zoomControl: false, attributionControl: true })
+      .setView([13.69, -89.22], 14);
+    L.control.zoom({ position: 'topright' }).addTo(map);
+    map.attributionControl.setPrefix('').addAttribution('TomTom');
+    base = L.tileLayer(
+      'https://api.tomtom.com/map/1/tile/basic/night/{z}/{x}/{y}.png?key=' + key,
+      { maxZoom: 19, minZoom: 3 }).addTo(map);
+    base.on('tileload', function () { tiles.loaded++; });
+    base.on('tileerror', function () { tiles.failed++; });
+    traffic = L.tileLayer(
+      'https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key=' + key,
+      { maxZoom: 19, minZoom: 3, opacity: 0.95 }).addTo(map);
+    trail = L.polyline([], { color: '#4da3ff', weight: 3, opacity: 0.75 }).addTo(map);
+    marker = L.marker([13.69, -89.22], {
+      icon: L.divIcon({ className: '', html: '<div class="rider-dot"></div>',
+                        iconSize: [16, 16], iconAnchor: [8, 8] })
+    }).addTo(map);
+    bubble = L.tooltip({ permanent: true, direction: 'top', offset: [0, -12],
+                         className: 'leaflet-tooltip-own' });
+    marker.bindTooltip(bubble).openTooltip();
+    // Dragging means the watcher wants to look elsewhere; stop chasing them.
+    map.on('dragstart', function () { following = false; });
+    setTimeout(function () { map.invalidateSize(); }, 60);
+    window.__motoReady = true;
+  }
+
+  /* Called every second or so by the app. */
+  function update(state) {
+    if (!map || state.lat == null) return;
+    var here = [state.lat, state.lon];
+    marker.setLatLng(here);
+    var dot = marker.getElement() && marker.getElement().querySelector('.rider-dot');
+    if (dot) dot.className = 'rider-dot' + (state.alarm ? ' red' : '');
+    if (state.lost) {
+      bubble.setContent('<div class="speedbub lost">Signal lost</div>');
+    } else {
+      bubble.setContent('<div class="speedbub' + (state.moving ? '' : ' stopped') + '">' +
+        (state.moving ? Math.round(state.speed) + ' km/h' : (state.stopped || 'stopped')) + '</div>');
+    }
+    var points = trail.getLatLngs();
+    var last = points[points.length - 1];
+    if (!last || Math.abs(last.lat - here[0]) > 1e-6 || Math.abs(last.lng - here[1]) > 1e-6) {
+      points.push(L.latLng(here));
+      while (points.length > 600) points.shift();
+      trail.setLatLngs(points);
+    }
+    if (following) map.panTo(here, { animate: true, duration: 0.6 });
+    // Traffic is only worth showing if it is current.
+    if (Date.now() - trafficAt > 120000) {
+      trafficAt = Date.now();
+      traffic.setUrl(traffic._url.split('&t=')[0] + '&t=' + Math.floor(Date.now() / 1000), false);
+    }
+  }
+
+  function follow() {
+    following = true;
+    var p = marker && marker.getLatLng();
+    if (p) map.panTo(p);
+  }
+
+  function clearTrail() { if (trail) trail.setLatLngs([]); }
+
+  /** What the app asks for when it wants to know whether this worked. */
+  function status() {
+    return JSON.stringify({
+      ready: !!window.__motoReady,
+      error: window.__motoError || null,
+      loaded: tiles.loaded, failed: tiles.failed,
+      size: map ? [map.getSize().x, map.getSize().y] : null
+    });
+  }
+
+  return { start: start, update: update, follow: follow, clearTrail: clearTrail,
+           status: status };
+})();
+</script>
+</body>
+</html>

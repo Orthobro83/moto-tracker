@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>moto-tracker — server</title>
+<style>
+  :root{--bg:#101215;--panel:#181b20;--line:#2a2f37;--ink:#e8eaed;--dim:#9aa3ad;
+    --faint:#6b7480;--go:#3ddc84;--warn:#ffb020;--bad:#ff4d4f;--info:#4da3ff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:22px}
+  h1{font-size:19px;margin:0 0 2px}
+  .sub{color:var(--faint);font-size:12px;font-family:var(--mono);margin:0 0 20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;margin-bottom:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px}
+  .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.11em;color:var(--faint);
+    margin:0 0 10px;font-weight:600}
+  .kv{display:flex;justify-content:space-between;padding:3px 0;font-size:13px;color:var(--dim)}
+  .kv b{color:var(--ink);font-family:var(--mono);font-weight:600}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;
+    letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:20px;
+    border:1px solid currentColor}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+  .c-go{color:var(--go)}.c-warn{color:var(--warn)}.c-bad{color:var(--bad)}
+  .c-info{color:var(--info)}.c-dim{color:var(--faint)}
+  .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+  button{font:inherit;font-weight:600;padding:8px 15px;border-radius:9px;cursor:pointer;
+    border:1px solid var(--line);background:#20242b;color:var(--ink)}
+  button.stop{background:var(--bad);border-color:var(--bad);color:#fff}
+  button:disabled{opacity:.45;cursor:default}
+  #log{background:#0c0e11;border:1px solid var(--line);border-radius:11px;padding:12px;
+    height:46vh;overflow-y:auto;font-family:var(--mono);font-size:12px;line-height:1.65}
+  .row{display:flex;gap:9px;white-space:pre-wrap;word-break:break-word;padding:1px 0}
+  .row .t{color:var(--faint);flex:none}
+  .row .g{flex:none;font-weight:700;width:74px}
+  .lv-info .g{color:var(--info)}.lv-warn .g{color:var(--warn)}.lv-alert .g{color:var(--bad)}
+  .lv-tick .g{color:var(--faint)}.lv-tick{color:var(--dim)}
+  body.no-ticks .lv-tick{display:none}
+  label.chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);cursor:pointer}
+  .lv-alert{background:rgba(255,77,79,.10);margin:0 -6px;padding:1px 6px;border-radius:4px}
+  .muted{color:var(--faint);font-size:12px}
+  .kv b.hi{color:var(--warn)}
+</style></head><body>
+
+<h1>moto-tracker — server</h1>
+<p class="sub" id="bind">…</p>
+
+<div class="bar">
+  <span id="conn" class="pill c-dim"><span class="dot"></span>connecting</span>
+  <button id="stop" class="stop">Stop server</button>
+  <label class="chk"><input type="checkbox" id="ticks" checked> show position ticks</label>
+  <span class="muted" id="rate">—</span>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Server health</h2>
+    <div class="kv"><span>Status</span><b id="h-status">—</b></div>
+    <div class="kv"><span>Uptime</span><b id="h-up">—</b></div>
+    <div class="kv"><span>Database</span><b id="h-db">—</b></div>
+    <div class="kv"><span>Python</span><b id="h-py">—</b></div>
+    <div class="kv"><span>Positions stored</span><b id="h-pos">—</b></div>
+    <div class="kv"><span>Incidents</span><b id="h-inc">—</b></div>
+  </div>
+  <div class="card" id="c-jack"><h2>Jack</h2><div class="muted">no data yet</div></div>
+  <div class="card" id="c-dana"><h2>Dana</h2><div class="muted">no data yet</div></div>
+</div>
+
+<div id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+// Timestamps arrive as UTC ISO; show the viewer's local wall clock.
+const localTime = (iso) => {
+  const t = new Date(iso);
+  return isNaN(t) ? (iso || "").slice(11, 23)
+    : t.toLocaleTimeString([], { hour12: false }) + "." +
+      String(t.getMilliseconds()).padStart(3, "0");
+};
+const fmtAge = (s) => s === null || s === undefined ? "never"
+  : s < 90 ? s.toFixed(0) + "s ago"
+  : s < 5400 ? (s / 60).toFixed(1) + " min ago"
+  : (s / 3600).toFixed(1) + " h ago";
+
+// Colour tracks the alert tiers in design.md: quiet while packets arrive,
+// warn once silence is notable, bad for an open incident.
+function riderCard(id, r) {
+  const el = $("c-" + id);
+  if (!el) return;
+  const age = r.last_seen_s;
+  let cls = "c-dim", label = r.state;
+  if (r.incident) { cls = "c-bad"; label = r.incident.state === "sos" ? "SOS" : "incident"; }
+  else if (r.state === "riding") {
+    const quiet = !(age !== null && age < 30);
+    cls = quiet ? "c-warn" : "c-go";
+    if (quiet) label = "signal lost, waiting…";
+  }
+  else if (r.state === "offbike") { cls = "c-info"; label = "off the bike"; }
+  el.innerHTML = `<h2>${r.name}</h2>
+    <span class="pill ${cls}"><span class="dot"></span>${label}</span>
+    <div style="margin-top:9px">
+      <div class="kv"><span>Trip</span><b>${r.trip_id == null ? "—"
+        : "#" + r.trip_id + (r.trip_started ? " since " + localTime(r.trip_started).slice(0,5) : "")}</b></div>
+      <div class="kv"><span>Last packet</span><b>${fmtAge(age)}</b></div>
+      <div class="kv"><span>Speed</span><b>${r.speed == null ? "—" : r.speed.toFixed(0) + " km/h"}</b></div>
+      <div class="kv"><span>Battery</span><b>${r.battery == null ? "—" : r.battery + "%"}</b></div>
+      <div class="kv"><span>G now (peak/mean)</span><b>${r.peak_g == null ? "—"
+        : r.peak_g.toFixed(2) + " / " + (r.mean_g == null ? "?" : r.mean_g.toFixed(2))}</b></div>
+      <div class="kv"><span>Rotation now</span><b>${r.peak_rot == null ? "—" : r.peak_rot.toFixed(2) + " rad/s"}</b></div>
+      <div class="kv"><span>Sensor samples</span><b>${r.accel_n == null ? "—" : r.accel_n + " / tick"}</b></div>
+      <div class="kv" style="border-top:1px solid var(--line);margin-top:6px;padding-top:7px">
+        <span>Max G <i style="color:var(--faint);font-style:normal">(${r.peaks_scope || ""})</i></span>
+        <b class="${r.max_g > 4 ? "hi" : ""}">${r.max_g == null ? "—"
+          : r.max_g.toFixed(2) + " / " + (r.max_mean_g == null ? "?" : r.max_mean_g.toFixed(2))}</b></div>
+      <div class="kv"><span>Max rotation</span><b class="${r.max_rot > 5 ? "hi" : ""}">${
+        r.max_rot == null ? "—" : r.max_rot.toFixed(2) + " rad/s"}</b></div>
+      <div class="kv"><span>Max G at</span><b>${r.max_g_at ? localTime(r.max_g_at) : "—"}</b></div>
+      <div class="kv"><span>Max G while riding</span><b class="${r.max_g_riding > 4 ? "hi" : ""}">${
+        r.max_g_riding == null ? "—" : r.max_g_riding.toFixed(2) + " g"}</b></div>
+      <div class="kv"><span>Mesh IP</span><b>${r.mesh_ip || "—"}</b></div>
+      <div class="kv"><span>Position</span><b>${r.lat == null ? "—" : r.lat.toFixed(4) + ", " + r.lon.toFixed(4)}</b></div>
+    </div>`;
+}
+
+// Signal-loss marker for the telemetry view. A riding phone that has gone quiet
+// is the condition this whole project exists to make legible, so it is called out
+// in the stream rather than left as an absence of lines.
+//
+// This is a view indicator only. Server-side `Stale` state and its tiered
+// alerting are Phase 5; this does not pre-empt them.
+const SILENT_AFTER_S = 30;
+const silent = {};
+
+function checkSilence(id, r) {
+  const quiet = r.state === "riding"
+    && r.last_seen_s !== null && r.last_seen_s >= SILENT_AFTER_S;
+  if (quiet && !silent[id]) {
+    silent[id] = true;
+    addLine({ ts: new Date().toISOString(), level: "warn", tag: "signal",
+              rider: id, message: "Signal lost, waiting…" });
+  } else if (!quiet && silent[id]) {
+    silent[id] = false;
+    addLine({ ts: new Date().toISOString(), level: "info", tag: "signal",
+              rider: id, message: "Signal restored" });
+  }
+}
+
+async function poll() {
+  // Fetched independently on purpose. These were once a single Promise.all, so
+  // one failing endpoint blanked the whole page — health, both rider panes, the
+  // lot — and made a working server look completely down. A broken panel should
+  // cost you that panel, not the dashboard.
+  let h = null, s = null;
+  try { h = await fetch("/health").then(r => r.ok ? r.json() : null); } catch (e) {}
+  try { s = await fetch("/state").then(r => r.ok ? r.json() : null); } catch (e) {}
+
+  if (s) for (const [id, r] of Object.entries(s)) { riderCard(id, r); checkSilence(id, r); }
+  if (!h) { $("h-status").textContent = "unreachable"; return; }
+  try {
+    $("h-status").textContent = "running";
+    $("h-up").textContent = h.uptime_s < 3600
+      ? (h.uptime_s / 60).toFixed(1) + " min" : (h.uptime_s / 3600).toFixed(1) + " h";
+    $("h-db").textContent = (h.db_bytes / 1024).toFixed(0) + " KB";
+    $("h-py").textContent = h.python;
+    $("h-pos").textContent = h.counts.positions;
+    $("h-inc").textContent = h.counts.incidents;
+  } catch (e) {
+    $("h-status").textContent = "degraded";
+  }
+}
+
+function addLine(d) {
+  const log = $("log");
+  const stuck = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  const row = document.createElement("div");
+  row.className = "row lv-" + d.level;
+  row.innerHTML = `<span class="t">${localTime(d.ts)}</span>`
+    + `<span class="g">${d.tag}</span>`
+    + `<span>${d.rider ? d.rider + " · " : ""}${d.message}</span>`;
+  log.appendChild(row);
+  while (log.children.length > 500) log.removeChild(log.firstChild);
+  if (stuck) log.scrollTop = log.scrollHeight;   // don't yank the view if scrolled up
+}
+
+// Ticks are live-only: they are never replayed on reconnect, and the durable
+// record is the positions table.
+let tickTimes = [];
+function noteTick(iso) {
+  // Count only genuinely recent ticks. On connect the server replays up to an
+  // hour of history in a burst, and counting those as "live" inflated the rate
+  // to hundreds per minute (seen 2026-09-10: 451/min against a true ~12).
+  const when = new Date(iso).getTime();
+  const t = Date.now();
+  if (!isNaN(when) && t - when > 60000) return;
+  tickTimes.push(t);
+  tickTimes = tickTimes.filter(x => t - x < 60000);
+  $("rate").textContent = tickTimes.length
+    ? tickTimes.length + " ticks/min" : "no ticks";
+}
+
+$("ticks").onchange = (e) =>
+  document.body.classList.toggle("no-ticks", !e.target.checked);
+
+function connect() {
+  const es = new EventSource("/events");
+  es.onopen = () => { $("conn").className = "pill c-go";
+    $("conn").innerHTML = '<span class="dot"></span>live'; };
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.level === "tick") noteTick(d.ts);
+    addLine(d);
+  };
+  es.onerror = () => { $("conn").className = "pill c-bad";
+    $("conn").innerHTML = '<span class="dot"></span>disconnected'; };
+}
+
+$("stop").onclick = async () => {
+  if (!confirm("Stop the server?\n\nlaunchd will not restart it until you run ./motoctl start.")) return;
+  $("stop").disabled = true;
+  await fetch("/admin/shutdown", { method: "POST" }).catch(() => {});
+};
+
+fetch("/health").then(r => r.json()).then(h => {
+  $("bind").textContent = "100.64.0.10:8088 · 127.0.0.1:8088 — python " + h.python;
+}).catch(() => {});
+connect(); poll(); setInterval(poll, 2000);
+</script>
+</body></html>

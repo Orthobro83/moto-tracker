@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>moto-tracker</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/ui/leaflet.css">
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="title">moto-tracker</span>
+    <span class="stat"><span class="dot" id="srvdot"></span><span id="srvtext">connecting…</span></span>
+    <span class="stat">Ping<b id="ping">—</b></span>
+    <span class="stat">Packets/min<b id="ppm">—</b></span>
+    <span class="spacer"></span>
+    <button id="gear" title="Settings and tests" aria-haspopup="true" aria-expanded="false">⚙</button>
+    <div id="gearmenu" hidden>
+      <button id="btn-test">Test alarm</button>
+      <button id="btn-drill">Test incident</button>
+      <button id="btn-forceend" hidden>Force end trip</button>
+      <button id="btn-devices">Devices</button>
+    </div>
+  </header>
+
+  <main id="main"></main>
+
+  <div id="replaybar" hidden>
+    <span class="replaytag">REPLAY</span>
+    <span class="who" id="replaywho"></span>
+    <button id="replayplay">▶</button>
+    <input type="range" id="scrub" min="0" max="1000" value="0">
+    <span class="clock" id="replayclock">—</span>
+    <button id="replayrate" class="rate">1×</button>
+    <button id="replayexit">Exit</button>
+  </div>
+
+  <div id="logwrap">
+    <div id="loghead">
+      <span id="logtitle">Running log</span>
+      <span class="spacer"></span>
+      <span id="logstate"></span>
+      <span id="chev">▾</span>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script src="/ui/leaflet.js"></script>
+<script src="/ui/app.js"></script>
+</body>
+</html>

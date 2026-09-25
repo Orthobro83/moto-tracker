@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  spike-14: the relay on the VPS, over HTTPS only (design.md 2026-09-15).
+
+  Nothing is allowed in cleartext anywhere. For the relay's address the app
+  trusts ONLY our own CA (res/raw/moto_ca.pem), not the system certificate store:
+  a certificate from any public authority, or from a VPN or proxy inspecting
+  traffic, is refused for this address. The CA's private key stays on the Mini.
+
+  The Meshnet (100.64.0.10) and LAN (192.168.1.254) cleartext exceptions of
+  spike-4 to spike-13 are gone with the Mini's server.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">203.0.113.10</domain>
+        <trust-anchors>
+            <certificates src="@raw/moto_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

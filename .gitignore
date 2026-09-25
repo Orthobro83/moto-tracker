@@ -1,0 +1,19 @@
+# secrets — never commit
+secrets.env
+*.key
+monitor-secrets/
+keystore.properties
+*.jks
+
+# build output
+build/
+.gradle/
+.kotlin/
+local.properties
+*.apk
+dist/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

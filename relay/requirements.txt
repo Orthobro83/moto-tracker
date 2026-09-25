@@ -1,0 +1,5 @@
+# Pinned: the relay is deployed unattended, so an upstream release must never
+# change behaviour between two deploys of the same code.
+fastapi==0.141.1
+uvicorn==0.53.0
+pydantic==2.13.5

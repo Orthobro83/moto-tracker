@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- The whole point of the spike: surviving with the screen off, in a pocket,
+         for hours. design.md "OS interference". -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Observer mode keeps listening with the app in the background: an Observer's
+         phone lives in a pocket, and an alarm that needs the screen open is no alarm. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- spike-15: a crash alarm that can be heard and felt through a jacket. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Second platform test: can a sideloaded app take the screen from Waze?
+         Android 14+ restricts this to calling/alarm apps by default. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- "Appear on top" / "Popup" in One UI. Unlike a full-screen intent this has
+         no screen-off requirement, so it works on an unlocked phone running Waze. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Lets the app ask for the Doze exemption directly, as a one-tap Allow
+         dialog. The browsable "Optimize battery usage" list is filtered by One UI
+         and an app can simply not appear in it (observed 2026-09-10). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application
+        android:name=".TrackerApp"
+        android:allowBackup="false"
+        android:label="Moto Tracker"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MotoTracker">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="Moto Tracker">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The screen the full-screen intent tries to raise over Waze. -->
+        <activity
+            android:name=".TakeoverActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
+        <service
+            android:name=".TrackerService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <service
+            android:name=".ObserverService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Waiting for a crash alert about the other rider" />
+        </service>
+    </application>
+</manifest>

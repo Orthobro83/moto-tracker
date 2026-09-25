@@ -1,0 +1,42 @@
+#!/bin/sh
+# Control wrapper for the moto-tracker server.
+#
+# launchd owns liveness so the server survives a reboot; this is the switch the
+# dashboard's Stop button and you both use. Stopping is deliberate and sticky —
+# KeepAlive/SuccessfulExit=false means a clean exit is not restarted.
+set -e
+cd "$(dirname "$0")"
+LABEL=com.example.mototracker
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UID_N=$(id -u)
+
+case "${1:-status}" in
+  install)
+    mkdir -p "$HOME/Library/LaunchAgents"
+    [ -f "$PLIST" ] || { echo "run ./deploy.sh first — it writes the plist"; exit 1; }
+    launchctl bootstrap "gui/$UID_N" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
+    echo "installed and started — http://127.0.0.1:8088/"
+    ;;
+  start)
+    launchctl kickstart -k "gui/$UID_N/$LABEL"
+    echo "started — http://127.0.0.1:8088/"
+    ;;
+  stop)
+    launchctl kill SIGTERM "gui/$UID_N/$LABEL" 2>/dev/null || true
+    echo "stopped"
+    ;;
+  restart)  launchctl kickstart -k "gui/$UID_N/$LABEL"; echo "restarted" ;;
+  uninstall)
+    launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || launchctl unload "$PLIST"
+    rm -f "$PLIST"; echo "uninstalled"
+    ;;
+  status)
+    launchctl print "gui/$UID_N/$LABEL" 2>/dev/null | grep -E 'state|pid|last exit' || echo "not loaded"
+    curl -s --max-time 2 http://127.0.0.1:8088/health || echo "(not responding)"
+    echo
+    ;;
+  logs)     tail -f "$HOME/Library/Logs/moto-tracker.log" ;;
+  open)     open http://127.0.0.1:8088/ ;;
+  dev)      exec "$HOME/Library/Application Support/moto-tracker/venv/bin/python3" app.py ;;
+  *) echo "usage: ./motoctl {install|start|stop|restart|status|logs|open|uninstall|dev}"; exit 1 ;;
+esac

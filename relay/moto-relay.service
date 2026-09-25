@@ -1,0 +1,39 @@
+[Unit]
+Description=moto-tracker relay (design.md 2026-09-15)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=moto-relay
+Group=moto-relay
+Environment=RELAY_DB=/var/lib/moto-relay/relay.db
+WorkingDirectory=/opt/moto-relay/current
+ExecStart=/opt/moto-relay/venv/bin/python /opt/moto-relay/current/relay.py
+Restart=always
+RestartSec=2
+
+# The relay needs its database and nothing else.
+StateDirectory=moto-relay
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/moto-relay
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+[versions]
+agp = "9.3.2"
+kotlin = "2.4.10"
+composeBom = "2026.08.00"
+coreKtx = "1.15.0"
+lifecycle = "2.8.7"
+activityCompose = "1.9.3"
+okhttp = "4.12.0"
+coroutines = "1.9.0"
+playLocation = "21.3.0"
+
+[libraries]
+core-ktx           = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+lifecycle-runtime  = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+lifecycle-compose  = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+activity-compose   = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+compose-bom        = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-ui         = { group = "androidx.compose.ui", name = "ui" }
+compose-graphics   = { group = "androidx.compose.ui", name = "ui-graphics" }
+compose-material3  = { group = "androidx.compose.material3", name = "material3" }
+okhttp             = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+kotlinx-coroutines = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+play-location      = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playLocation" }
+kotlin-test        = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
+junit              = { group = "junit", name = "junit", version = "4.13.2" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version = "1.7.0" }
+androidx-test-junit  = { group = "androidx.test.ext", name = "junit", version = "1.3.0" }
+androidx-test-core   = { group = "androidx.test", name = "core", version = "1.7.0" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose      = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
