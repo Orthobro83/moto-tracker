@@ -56,11 +56,12 @@ the demo route.
 
 | Rider Mode | Observer Mode | Hybrid Mode |
 |:---:|:---:|:---:|
-| ![Rider](docs/screenshots/android-rider.png) | ![Observer](docs/screenshots/android-observer.png) | ![Hybrid](docs/screenshots/android-hybrid.png) |
-| This phone is on a trip | The other rider is out, and this phone watches | Both riders are out at once |
+| ![Rider](docs/screenshots/android-rider.gif) | ![Observer](docs/screenshots/android-observer.png) | ![Hybrid](docs/screenshots/android-hybrid.png) |
+| This phone is on a trip. The road runs at the speed being ridden | The other rider is out, and this phone watches | Both riders are out at once |
 
-*The Android screenshots come from an automated layout test on made-up data, so the
-map area is blank. In real use it shows a live map.*
+*The Android images come from the app's automated layout test on made-up data. The
+maps and the road animation were added afterwards, drawn by the app's own map page
+and scene code.*
 
 ## How it fits together
 
