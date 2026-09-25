@@ -15,9 +15,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VPS="moto@203.0.113.10"
-URL="https://203.0.113.10"
-SSH_KEY="$HOME/.ssh/moto_vps_ed25519"
+VPS="moto@***.*.***.**"
+URL="https://***.*.***.**"
+SSH_KEY="$HOME/.ssh/****_***_*******"
 SUPPORT="$HOME/Library/Application Support/moto-tracker"
 CA="$SUPPORT/pki/ca.crt"
 SMOKE_KEY="$SUPPORT/relay/smoke.key"
