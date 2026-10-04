@@ -1,16 +1,5 @@
 package com.example.mototracker
 
-/*
- * WARNING: UNTESTED SAFETY LOGIC. DO NOT RELY ON THIS.
- *
- * This crash detection has never been tested against a real crash, because no
- * crash data exists. It has only been tuned to stay quiet during normal riding.
- * It may miss a real crash entirely, fire when nothing happened, or fail
- * silently because of a dead battery, lost signal, OS power management or a bug.
- * It is not a safety device, emergency service or substitute for one. Nobody
- * should rely on it, ever, for anyone's safety. See the README.
- */
-
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest

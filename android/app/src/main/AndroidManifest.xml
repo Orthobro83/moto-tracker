@@ -15,6 +15,8 @@
          phone lives in a pocket, and an alarm that needs the screen open is no alarm. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The listener comes back after a reboot by itself (Jack, 2026-09-27). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- spike-15: a crash alarm that can be heard and felt through a jacket. -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Second platform test: can a sideloaded app take the screen from Waze?
@@ -68,7 +70,16 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Waiting for a crash alert about the other rider" />
+                android:value="Listening for the other rider starting a ride, and for a crash alert about them" />
         </service>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

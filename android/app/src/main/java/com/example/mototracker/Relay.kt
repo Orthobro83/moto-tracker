@@ -47,19 +47,53 @@ object Relay {
         }
     }
 
+    /**
+     * A rider on a trip who has not been heard from for a minute (relay-15): since when,
+     * in relay time, and whether it has gone on past two minutes, when every screen
+     * alerts (Jack, 2026-09-29). An alert, not an incident — nothing is raised.
+     */
+    class Signal(val since: String, val alert: Boolean) {
+        private val sinceMs: Long? = Time.parse(since)
+
+        /** How long unheard, on the relay's clock: m:ss, or h:mm:ss past the hour. */
+        fun lostFor(relayNowMs: Long): String {
+            val s = ((relayNowMs - (sinceMs ?: relayNowMs)) / 1000).coerceAtLeast(0)
+            return if (s >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+                   else String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
+        }
+
+        /** When they were last heard, on this phone's clock, for a notification's timer. */
+        fun sinceOnThisPhone(): Long? = sinceMs?.let { it - (Relay.relayNow() - System.currentTimeMillis()) }
+    }
+
     class Rider(val id: String, o: JSONObject) {
         val name: String = o.optString("name", id)
         /** riding | offbike | sleep */
         val state: String = o.optString("state", "sleep")
         val tripId: Int? = if (o.isNull("trip_id")) null else o.optInt("trip_id")
+        val tripStarted: String? = o.optString("trip_started").takeIf { it.isNotEmpty() && it != "null" }
         val speed = o.optDouble("speed", Double.NaN)
         val battery = if (o.isNull("battery")) null else o.optInt("battery")
         val lastSeenS = o.optDouble("last_seen_s", Double.NaN)
+        val lastReceivedAt: String? = o.optString("last_received_at").takeIf { it.isNotEmpty() && it != "null" }
         val lat = if (o.isNull("lat")) null else o.optDouble("lat")
         val lon = if (o.isNull("lon")) null else o.optDouble("lon")
         val incident: Incident? = o.optJSONObject("incident")?.let { Incident(it) }
         /** The last closed trip, as the relay remembers it. Null once it ages out. */
         val previousTrip: JSONObject? = o.optJSONObject("previous_trip")
+
+        /**
+         * Null while they are heard. The relay decides (relay-15), so this phone, the
+         * other phone and both Macs all say "Signal lost" at the same moment, and a
+         * phone that has lost the relay itself cannot mistake that for the rider's
+         * silence. From an older relay: the old rule — a minute, and never an alert.
+         */
+        val signal: Signal? = when {
+            o.has("signal") -> o.optJSONObject("signal")?.let { Signal(it.optString("since"), it.optBoolean("alert")) }
+            tripId != null && lastReceivedAt != null && lastSeenS >= Config.SIGNAL_LOST_S ->
+                Signal(lastReceivedAt, false)
+            else -> null
+        }
     }
 
     class Snapshot(val riders: Map<String, Rider>, val asOfMs: Long, val fetchedAt: Long) {
@@ -95,6 +129,10 @@ object Relay {
         val snap = Snapshot(riders, if (asOf > 0) asOf else System.currentTimeMillis(),
                             System.currentTimeMillis())
         snapshot = snap
+        // Whoever asked, a trip starting or ending is said out loud once, and so is
+        // the other rider going unheard for two minutes.
+        runCatching { RideNews.check(ctx, snap) }
+        runCatching { SignalWatch.check(ctx, snap) }
         return snap
     }
 

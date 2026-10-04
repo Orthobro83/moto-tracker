@@ -1,11 +1,14 @@
-# moto-tracker — installing the monitor on the second Mac
+# moto-tracker — installing it on the second Mac
 
-This folder installs the moto-tracker monitor on a Mac. It is the same program that
-runs on the first Mac: the live map, the incident alarm, and the menu-bar icon.
+This folder installs the moto-tracker app on a Mac. It is the same app that runs on
+the first Mac: the live map, the incident alarm, and the menu-bar icon.
+
+It is one app and nothing else. It talks to the relay directly, the way the phones
+do — there is no background service to start first and nothing to wait for.
 
 Everything it needs is in here except one thing — a **pairing code**, which comes
 from the first Mac and takes ten seconds to make. There is nothing to configure and
-no account to create.
+no account to create. (A Mac that was already paired keeps its pairing when updated.)
 
 ---
 
@@ -31,8 +34,7 @@ so this one has no *Open logs* button and no *Devices* button. Nothing else diff
 | | |
 |---|---|
 | `Install moto-tracker.command` | the installer — run it from Terminal, see step 2 |
-| `app/` | the app's source, which the installer compiles here, plus a prebuilt spare |
-| `monitor/` | the background service: the map, the alarm, the relay connection |
+| `app/` | the app's source, which the installer compiles here |
 | `pki/ca.crt` | the certificate that proves the relay is ours (public — not a password) |
 | `monitor-secrets/` | the map key, if it was included (see *Privacy*, below) |
 
@@ -41,11 +43,10 @@ so this one has no *Open logs* button and no *Devices* button. Nothing else diff
 ## Before you start
 
 * **macOS 13 or newer.**
-* **An internet connection.** The installer downloads three small Python packages.
 * **Apple's command line tools.** Most Macs already have them. If not, the installer
   says so and opens the dialog for you — click *Install*, wait for it to finish
-  (a few minutes), then run the installer again. They provide Python and the Swift
-  compiler the installer uses to build the app on this Mac.
+  (a few minutes), then run the installer again. They provide the Swift compiler the
+  installer uses to build the app on this Mac.
 * You will be asked for **nothing else**: no password, no Apple ID, no account.
 
 ---
@@ -71,19 +72,16 @@ so this one has no *Open logs* button and no *Devices* button. Nothing else diff
    and it then **builds the app here on this Mac**, so nothing that arrived from
    elsewhere ever has to launch.
 
-3. Watch the output. It prints six numbered steps and takes a minute or two. If it
+3. Watch the output. It prints five numbered steps and takes about a minute. If it
    asks for Apple's command line tools, click **Install** in the dialog, wait for it
    to finish, and run the same line again.
 
 4. When it finishes, the **moto-tracker** window opens by itself.
 
-The installer puts the app in `/Applications`, starts the background service, and
-sets both to start again whenever the Mac restarts. You never have to launch
-anything by hand afterwards.
-
-> **Do not double-click `moto-tracker.app` inside this folder.** That copy is only a
-> spare. macOS will refuse it ("cannot open"), and it is not the one that gets
-> installed — the installer builds a fresh one.
+The installer puts the app in `/Applications` and sets it to open whenever the Mac
+starts — and to reopen by itself at once if it ever crashes. You never have to launch
+anything by hand afterwards. If this Mac still has the old background service from an
+earlier version, the installer retires it.
 
 ---
 
@@ -93,10 +91,9 @@ Exactly the same way. Unzip the new folder and run the installer again:
 
     bash ~/Desktop/moto-tracker-for-her-mac/Install\ moto-tracker.command
 
-It replaces the code and the app, restarts the background service, and **leaves this
-Mac's pairing alone** — the key lives in this Mac's own user folder, not in the
-bundle, so it is never touched. Nobody has to pair anything a second time. The window
-reopens by itself when it is done.
+It replaces the app and **leaves this Mac's pairing alone** — the key lives in this
+Mac's own user folder, not in the bundle, so it is never touched. Nobody has to pair
+anything a second time. The window reopens by itself when it is done.
 
 ---
 
@@ -122,9 +119,13 @@ No key was ever copied between the two machines.
 
 ## Using it
 
-**The window.** Closing it does *not* quit the program — it only hides it, and the
-alarm still works. Click the **moto-tracker icon in the menu bar** (top-right of the
+**The window.** Closing it does *not* quit the app — it only hides it, and the alarm
+still works. Click the **moto-tracker icon in the menu bar** (top-right of the
 screen, near the clock) to bring the window back.
+
+**Quitting** asks first, because while moto-tracker is quit this Mac neither sounds
+the alarm nor flashes the icon. It opens again at the next login, or from
+Applications.
 
 **The menu-bar icon flashes** while an incident is open: red for a crash, yellow once
 the rider has said they are OK.
@@ -161,8 +162,9 @@ blocked. (If you would rather clear the mark first, run
 `xattr -dr com.apple.quarantine ~/Desktop/moto-tracker-for-her-mac` and then
 double-click the installer.)
 
-**"Waiting for the monitor…"** — the background service is still starting. It
-retries by itself. If it stays there more than a minute, restart the Mac.
+**The window looks frozen** — choose **Reload** from the moto-tracker menu (⌘R). If
+the app as a whole ever stops responding, it notices within two minutes, closes
+itself and reopens.
 
 **"Not paired yet"** — see *Pairing*, above.
 
@@ -185,15 +187,15 @@ menu to check the level from the next room.
 
 ## Privacy — what leaves this Mac
 
-Nothing listens for connections on this Mac: the program is reachable only from the
-Mac itself. It talks outward to two places:
+Nothing on this Mac listens for connections at all. The app talks outward to three
+places:
 
 * **the relay**, over an encrypted connection it trusts only because of the
   certificate in `pki/`, using this Mac's own key;
 * **the weather service**, with the rider's position **rounded to about a
-  kilometre**, so an exact location is never sent.
-
-Map tiles are fetched through this Mac, so the map key never reaches the page.
+  kilometre**, so an exact location is never sent;
+* **the map service**, for map tiles — the app adds the map key itself, so the key
+  never reaches the page.
 
 If this bundle includes `monitor-secrets/tomtom.key`, treat the folder itself as
 private and delete it after installing.
@@ -202,9 +204,9 @@ private and delete it after installing.
 
 ## Stopping or removing it
 
-To stop it for now: open Terminal and run
+To stop it opening at login: open Terminal and run
 
-    bash ~/Library/Application\ Support/moto-tracker/monitor-runtime/install.sh --uninstall
+    bash ~/Library/Application\ Support/moto-tracker/install.sh --uninstall
 
-That stops the service and the login item, and leaves the app and the data alone.
+That quits the app and removes the login item, and leaves the app and the data alone.
 To remove the app as well, drag `/Applications/moto-tracker.app` to the Bin.

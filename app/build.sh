@@ -1,19 +1,45 @@
 #!/bin/bash
 #
-# Builds moto-tracker.app from MotoTracker.swift.
+# Builds moto-tracker.app: the whole Mac side of moto-tracker in one app
+# (design.md 2026-10-04). It talks to the relay itself; there is no service to go with it.
 #
-#   bash app/build.sh [destination]      # default: build/moto-tracker.app beside this script
+#   bash app/build.sh [destination]          # default: build/moto-tracker.app beside this script
+#   bash app/build.sh --harness <file>       # test only: the same code, no window
+#   bash app/build.sh --page-check <file>    # test only: the real page in real WebKit
 #
-# Ad-hoc signed: this Mac runs it, nothing else has to. The app talks only to the
-# monitor on 127.0.0.1, which is why it needs the local-networking exception below.
+# Ad-hoc signed: this Mac runs it, nothing else has to.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DEST="${1:-$HERE/build/moto-tracker.app}"
 NAME="moto-tracker"
 
+# Apple's Command Line Tools are enough — they carry swiftc and the macOS SDK — but the
+# compiler has to be run THROUGH xcrun, which is what puts the SDK in its hands.
+# Calling swiftc directly fails with "unable to load standard library".
+if ! xcrun --find swiftc >/dev/null 2>&1; then
+  echo "No Swift compiler on this Mac. Install Apple's command line tools with:" >&2
+  echo "    xcode-select --install" >&2
+  exit 1
+fi
+swiftc() {
+  xcrun swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos13.0" -sdk "$(xcrun --show-sdk-path)" "$@"
+}
+
+if [ "${1:-}" = "--harness" ] || [ "${1:-}" = "--page-check" ]; then
+  OUT="${2:?where should it go?}"
+  mkdir -p "$(dirname "$OUT")"
+  if [ "$1" = "--harness" ]; then
+    swiftc -o "$OUT" "$HERE"/Core/*.swift "$HERE/Harness/main.swift"
+  else
+    swiftc -o "$OUT" "$HERE"/Core/*.swift "$HERE/PageHandler.swift" "$HERE/PageCheck/main.swift"
+  fi
+  echo "built $OUT"
+  exit 0
+fi
+
+DEST="${1:-$HERE/build/moto-tracker.app}"
 rm -rf "$DEST"
-mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources"
+mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources/ui"
 
 cat > "$DEST/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,31 +52,39 @@ cat > "$DEST/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>moto-tracker</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>3.0</string>
-  <key>CFBundleVersion</key><string>3</string>
+  <key>CFBundleShortVersionString</key><string>4.0</string>
+  <key>CFBundleVersion</key><string>4</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>private</string>
+  <!-- Never napped: the relay loop and the alarm keep time with the window hidden. -->
+  <key>NSAppSleepDisabled</key><true/>
   <key>NSAppTransportSecurity</key>
   <dict>
+    <!-- Only for app/demo.py, which points a copy of the app at a throwaway relay on
+         this Mac. The installed app talks to the relay over HTTPS. -->
     <key>NSAllowsLocalNetworking</key><true/>
+    <!-- The relay's certificate comes from our own CA, which the app checks itself
+         (Relay.swift): the chain must end at that CA and name this address. Without
+         this, macOS's app rules insist on a CA from the system's list as well. -->
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>203.0.113.10</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+      </dict>
+    </dict>
   </dict>
 </dict>
 </plist>
 PLIST
 
 echo "compiling…"
-# Apple's Command Line Tools are enough — they carry swiftc and the macOS SDK — but
-# the compiler has to be run THROUGH xcrun, which is what puts the SDK in its hands.
-# Calling swiftc directly fails with "unable to load standard library".
-if ! xcrun --find swiftc >/dev/null 2>&1; then
-  echo "No Swift compiler on this Mac. Install Apple's command line tools with:" >&2
-  echo "    xcode-select --install" >&2
-  exit 1
-fi
-xcrun swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos13.0" \
-  -sdk "$(xcrun --show-sdk-path)" \
-  -o "$DEST/Contents/MacOS/$NAME" "$HERE/MotoTracker.swift"
+swiftc -parse-as-library -o "$DEST/Contents/MacOS/$NAME" "$HERE/MotoTracker.swift" "$HERE/PageHandler.swift" \
+  "$HERE"/Core/*.swift
+
+# The page, inside the app: it is drawn from here, not fetched from anywhere.
+cp "$HERE"/ui/* "$DEST/Contents/Resources/ui/"
 
 # A small icon so the Dock and the About panel are not a blank page.
 ICONSET="$(mktemp -d)/AppIcon.iconset"
@@ -105,9 +139,9 @@ fi
 rm -rf "$(dirname "$ICONSET")"
 
 # How the installer recognises its own app. It must exist BEFORE signing: anything
-# added to a signed bundle afterwards breaks the seal, and a broken seal is what
-# macOS calls "damaged" — fatal on a Mac the app was carried to.
-echo "moto-tracker monitor" > "$DEST/Contents/Resources/moto-monitor"
+# added to a signed bundle afterwards breaks the seal, and a broken seal is what macOS
+# calls "damaged" — fatal on a Mac the app was carried to.
+echo "moto-tracker app" > "$DEST/Contents/Resources/moto-tracker-app"
 
 codesign --force --deep --sign - "$DEST" >/dev/null
 codesign --verify --strict "$DEST" || { echo "the built app is not sealed" >&2; exit 1; }

@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Dev only: the monitor running against a fake ride, for looking at the interface.
+Dev only: a copy of the Mac app running against a fake ride, for looking at the
+interface.
 
-Starts a throwaway relay and a throwaway monitor in a temporary directory, then
-rides a loop around San Salvador. Nothing here touches the VPS, the real archive
-or the phones, and the alarm is muted unless --sound is given.
+Starts a throwaway relay in a temporary directory, opens a second copy of the app
+pointed at it (its window says "demo"; it keeps its own archive there too), then
+rides a loop around San Salvador. Nothing here touches the VPS, the real archive,
+the phones or the real app, and the alarm is muted unless --sound is given.
 
-    /usr/bin/python3 monitor/demo.py                 # idle panes, then a ride
-    /usr/bin/python3 monitor/demo.py --incident 25   # crash 25 s into the ride
-    /usr/bin/python3 monitor/demo.py --idle          # previous-trip panes only
-    /usr/bin/python3 monitor/demo.py --both          # Dana rides too (Hybrid)
-    /usr/bin/python3 monitor/demo.py --both --incident 25 --who dana
-    /usr/bin/python3 monitor/demo.py --both --drop 20   # Dana's data runs out 20 s in
+    /usr/bin/python3 app/demo.py                 # idle panes, then a ride
+    /usr/bin/python3 app/demo.py --incident 25   # crash 25 s into the ride
+    /usr/bin/python3 app/demo.py --idle          # previous-trip panes only
+    /usr/bin/python3 app/demo.py --both          # Dana rides too (Hybrid)
+    /usr/bin/python3 app/demo.py --both --incident 25 --who dana
+    /usr/bin/python3 app/demo.py --both --drop 20   # Dana's data runs out 20 s in
+
+It uses app/build/moto-tracker.app, building it first if it is not there.
 """
 import argparse
 import json
@@ -65,14 +69,17 @@ def main() -> int:
     ap.add_argument("--drop", type=float, default=None,
                     help="seconds into her ride that Dana stops reporting (out of data)")
     ap.add_argument("--who", default="jack", choices=["jack", "dana"], help="whose crash --incident raises")
-    ap.add_argument("--port", type=int, default=8099)
+    ap.add_argument("--app", default=str(HERE / "build/moto-tracker.app"), help="the built app to run")
     args = ap.parse_args()
+
+    app = Path(args.app)
+    if not (app / "Contents/MacOS/moto-tracker").exists():
+        subprocess.run(["bash", str(HERE / "build.sh"), str(app)], check=True)
 
     python = str(VENV) if VENV.exists() else sys.executable
     work = Path(tempfile.mkdtemp(prefix="moto-demo-"))
     relay_port = free_port()
     relay_url = f"http://127.0.0.1:{relay_port}"
-    monitor_url = f"http://127.0.0.1:{args.port}"
     procs = []
 
     relay_env = dict(os.environ, RELAY_DB=str(work / "relay.db"), RELAY_PORT=str(relay_port))
@@ -98,17 +105,15 @@ def main() -> int:
     env = dict(os.environ, MONITOR_SUPPORT=str(work / "support"), MONITOR_RELAY_URL=relay_url,
                MONITOR_KEY=str(work / "monitor.key"), MONITOR_CA=str(work / "none.crt"),
                MONITOR_ARCHIVE=str(work / "moto.db"), MONITOR_LOGS=str(work / "logs"),
-               MONITOR_TILE_CACHE=str(work / "tiles"), MONITOR_PORT=str(args.port),
+               MONITOR_TILE_CACHE=str(work / "tiles"), MONITOR_STATUS_FILE=str(work / "app-status.json"),
                MONITOR_TOMTOM_KEY=str(SUPPORT / "monitor-secrets/tomtom.key"),
                MONITOR_ALARM_MUTE="0" if args.sound else "1", MONITOR_OPEN_APP="0",
                MONITOR_DEVICES="0")
-    procs.append(subprocess.Popen([python, str(HERE / "monitor.py")], env=env, stdout=subprocess.DEVNULL))
-    for _ in range(60):
-        if call(monitor_url, "GET", "/api/status")[0] == 200:
-            break
-        time.sleep(0.25)
+    procs.append(subprocess.Popen([str(app / "Contents/MacOS/moto-tracker")], env=env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
 
-    print(f"monitor:  {monitor_url}\nrelay:    {relay_url}\nworkspace {work}", flush=True)
+    print(f"app:      {app} (window titled \"moto-tracker — demo\")\nrelay:    {relay_url}\n"
+          f"status:   {work / 'app-status.json'}\nworkspace {work}", flush=True)
     stop = threading.Event()
 
     def ride():

@@ -9,9 +9,13 @@
 
 const POLL_MS = 1000, TICK_MS = 250, TRAIL_MS = 10000, TRAFFIC_MS = 120000;
 const MOVING_KMH = 3;
-// Nothing heard for this long and the bubble says "Signal lost", not how long the rider
-// has been stopped: they are not known to be stopped, only not heard (Jack, 2026-09-24).
-// The relay's own plain-silence threshold; it clears a wifi-to-mobile handover.
+// A signal loss (Jack, 2026-09-29). Unheard for a minute, the bubble says "Signal lost
+// for m:ss" over the last known position — not how long the rider has been stopped: they
+// are not known to be stopped, only not heard (2026-09-24). Unheard for two, a bar over
+// the map says so too and the Mac chimes once. An alert, not a crash: nothing is raised.
+// The relay decides both moments (relay-15, `signal` in /state), so every screen agrees
+// and a Mac that has lost the relay itself cannot blame the rider. This is only the
+// old rule, for an older relay.
 const SIGNAL_LOST_S = 60;
 
 const $ = (id) => document.getElementById(id);
@@ -91,6 +95,15 @@ async function api(path, body) {
   if (!r.ok) throw new Error((data && (data.detail || data.error)) || `HTTP ${r.status}`);
   return data;
 }
+
+/** The rider's signal loss: {since, alert} while unheard, else null. */
+function signalOf(r) {
+  if (r.signal !== undefined) return r.signal;
+  const gap = since(r.last_received_at);
+  return gap !== null && gap >= SIGNAL_LOST_S ? { since: r.last_received_at, alert: false } : null;
+}
+
+const signalAlert = (r) => !!(r && (signalOf(r) || {}).alert);
 
 /* ---------------------------------------------------------------- links out */
 
@@ -403,7 +416,10 @@ function buildRidingSide(st, side) {
     foot.append(logs);
     tele.append(foot);
   }
-  host.append(mapDiv, tele, wx, follow);
+  const sigbar = el('div', 'sigbar');
+  sigbar.dataset.k = 'sigbar';
+  sigbar.hidden = true;
+  host.append(mapDiv, sigbar, tele, wx, follow);
   side.slot.append(host);
   makeMap(side, mapDiv, follow);
 }
@@ -549,7 +565,11 @@ function drawRiding(st, side) {
   const inc = r.incident;
   const look = inc ? (inc.display === 'pending' ? 'amber' : inc.display) : '';
   side.slot.querySelector('.tele').className = 'tele' + (look ? ' ' + look : '');
-  side.slot.querySelector('.maphost').className = 'maphost' + (look ? ' ' + look : '');
+  // The signal-loss bar takes the top of the map; the panel and the zoom step down.
+  const alert = signalAlert(r);
+  side.slot.querySelector('.maphost').className = 'maphost' + (look ? ' ' + look : '') + (alert ? ' sig' : '');
+  q('sigbar').hidden = !alert;
+  if (alert) drawSignalBar(side, r);
   const slot = q('alertslot');
   if (inc) {
     if (!slot.firstChild || slot.dataset.inc !== String(inc.id) || slot.dataset.display !== inc.display) {
@@ -572,19 +592,27 @@ function drawRiding(st, side) {
 /* The folded bar still says when its rider needs looking at. */
 function drawBars(st) {
   for (const side of Object.values(S.sides)) {
-    const inc = (st.riders[side.id] || {}).incident;
-    const look = inc ? (inc.display === 'pending' ? 'amber' : inc.display) : '';
+    const r = st.riders[side.id] || {};
+    const inc = r.incident;
+    const look = inc ? (inc.display === 'pending' ? 'amber' : inc.display) : (signalAlert(r) ? 'sig' : '');
     side.bar.className = `restore ${side.edge}` + (look ? ' ' + look : '');
   }
 }
 
-/** What the speed bubble says: speed, how long stopped, or that nothing is heard. */
-function bubbleHtml(r, gap, riderId) {
-  if (gap !== null && gap >= SIGNAL_LOST_S) return '<div class="speedbub lost">Signal lost</div>';
+/** What the speed bubble says: speed, how long stopped, or how long nothing has been heard. */
+function bubbleHtml(r, riderId) {
+  const lost = signalOf(r);
+  if (lost) return `<div class="speedbub lost">Signal lost for ${clock(since(lost.since))}</div>`;
   const moving = (r.speed || 0) >= MOVING_KMH;
   const stoppedFor = moving ? null : since(S.stoppedSince[riderId] || r.last_received_at);
   return `<div class="speedbub${moving ? '' : ' stopped'}">` +
     (moving ? `${Math.round(r.speed)} km/h` : `Stopped for ${clock(stoppedFor)}`) + '</div>';
+}
+
+/** The bar across the top of the map, past two minutes unheard (Jack, 2026-09-29). */
+function drawSignalBar(side, r) {
+  side.q('sigbar').textContent =
+    `Signal lost for ${clock(since(signalOf(r).since))}. Awaiting acquisition of signal.`;
 }
 
 /* counters that must run in real time, re-read from the clock every frame */
@@ -602,8 +630,9 @@ function tick() {
     side.q('tlast').textContent = ago(gap);
     side.q('tlast').style.color = late ? 'var(--warn)' : '';
     if (side.bubble && r.lat !== null && r.lat !== undefined) {
-      side.bubble.setContent(bubbleHtml(r, gap, side.id));
+      side.bubble.setContent(bubbleHtml(r, side.id));
     }
+    if (signalAlert(r)) drawSignalBar(side, r);
   }
   const box = document.querySelector('.box.incident');
   if (box && S.incidentOpen) {
@@ -629,7 +658,6 @@ function incidentTitle(inc, short) {
   const pending = inc.display === 'pending';
   if (inc.drill) return pending ? 'DRILL — CHECKING' : 'DRILL — INCIDENT DETECTED';
   if (inc.kind === 'help') return short ? 'RIDER NEEDS HELP' : 'RIDER PRESSED “I NEED HELP”';
-  if (inc.kind === 'lost') return pending ? 'NO SIGNAL — WATCHING' : 'NO SIGNAL FROM THE RIDER';
   if (inc.kind === 'silence') {
     return pending ? 'SIGNAL LOST AFTER AN IMPACT' : 'SIGNAL LOST AFTER AN IMPACT';
   }
@@ -710,11 +738,7 @@ function showIncident(riderId, phrase) {
   box.append(actions);
 
   const note = el('div', 'note');
-  if (inc.kind === 'lost' && inc.display === 'pending') {
-    note.className = 'note warn';
-    note.textContent = 'Nothing violent was recorded — the phone simply stopped reporting while '
-      + 'riding. This clears itself the moment the signal comes back, and nobody is asked anything.';
-  } else if (inc.kind === 'silence' && inc.display === 'pending') {
+  if (inc.kind === 'silence' && inc.display === 'pending') {
     note.className = 'note warn';
     note.textContent = 'Something hard was recorded and then the phone went quiet. It clears itself '
       + 'if the ride carries on as normal.';
@@ -1034,6 +1058,7 @@ function drawReplay(rebuild) {
     peaks_scope: 'trip', lat: f.lat, lon: f.lon,
     last_received_at: f.received_at,
     incident: null,
+    signal: null,
   };
   S.status = synthetic;
 
@@ -1201,7 +1226,8 @@ async function showDevices() {
 /*
  * What colour a log line gets (Jack, 2026-09-16):
  *
- *   blue    the rider's state changed — trip started, ride resumed, off the bike
+ *   blue    the rider's state changed — trip started, ride resumed, off the bike,
+ *           the signal back
  *   yellow  hard braking, or a possible incident that has not escalated
  *   red     an incident, open or closed
  *
@@ -1227,7 +1253,7 @@ function logClass(e) {
     if (LOG_YELLOW.some((w) => text.includes(w))) return 'possible';
     return 'incident';
   }
-  if (tag === 'trip' || tag === 'rider' || tag === 'stop') return 'state';
+  if (tag === 'trip' || tag === 'rider' || tag === 'stop' || tag === 'signal-ok') return 'state';
   if (LOG_YELLOW.some((w) => text.includes(w))) return 'possible';
   if (e.level === 'alert') return 'incident';
   if (e.level === 'warn') return 'possible';
@@ -1375,7 +1401,7 @@ async function refresh() {
 function loop() {
   refresh().catch(() => {
     $('srvdot').className = 'dot bad';
-    $('srvtext').textContent = 'monitor not answering';
+    $('srvtext').textContent = 'app not answering';
   });
   pollLog();
 }

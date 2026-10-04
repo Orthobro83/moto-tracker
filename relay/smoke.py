@@ -107,6 +107,8 @@ def main() -> int:
     me = b.get(SMOKE, {}) if isinstance(b, dict) else {}
     check("state shows the riders", s == 200 and "jack" in b and "dana" in b, (s, b))
     check("state reflects the trip", me.get("state") == "riding" and me.get("trip_id") == trip, me)
+    # relay-15: every screen draws a signal loss from this. Just heard, so none.
+    check("state says whether the rider is being heard", "signal" in me and me["signal"] is None, me)
 
     s, b = call("POST", "/ride/offbike", {"rider": SMOKE})
     check("off the bike", s == 200 and b.get("state") == "offbike", (s, b))

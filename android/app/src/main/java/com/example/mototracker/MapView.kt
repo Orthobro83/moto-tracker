@@ -36,9 +36,14 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.json.JSONTokener
 
+/** Where the maps open, and whose sun they follow until a rider has a position: San Salvador. */
+internal const val HOME_LAT = 13.6929
+internal const val HOME_LON = -89.2182
+
 /**
- * The Observer's map: Leaflet in a WebView, with TomTom's night tiles and traffic
- * flow drawn straight from TomTom to this phone.
+ * The Observer's map: Leaflet in a WebView, with TomTom's tiles and traffic flow drawn
+ * straight from TomTom to this phone — the light day style from sunrise, the night
+ * style from sunset (Jack, 2026-09-29; see Sun).
  *
  * The key is fetched from the relay and kept in private storage, so it is not in the
  * APK and no tile crosses the VPS (Jack, 2026-09-16). The page itself ships in the
@@ -60,7 +65,12 @@ fun RiderMap(
     stoppedLabel: String?,
     alarm: Boolean,
     height: Dp = 260.dp,
-    signalLost: Boolean = false,
+    /** How long the rider has been unheard, "m:ss", while the relay says so; else null. */
+    signalLostFor: String? = null,
+    /** Past two minutes: the app's bar is over the top of the map. */
+    signalAlert: Boolean = false,
+    /** The sun is up where the rider is: TomTom's light day style instead of night. */
+    light: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -94,7 +104,7 @@ fun RiderMap(
         // Its height goes with the key: see map.html for why the page cannot work
         // it out on its own.
         view.evaluateJavascript(
-            "moto.start(${JSONObject.quote(k)}, ${height.value.toInt()});") { answer ->
+            "moto.start(${JSONObject.quote(k)}, ${height.value.toInt()}, $light);") { answer ->
             val said = unquote(answer)
             RideLog.write(context, "MAP", "start: $said")
             if (said == "ok" || said == "already started") {
@@ -134,7 +144,16 @@ fun RiderMap(
         }
     }
 
-    LaunchedEffect(lat, lon, speedKmh, alarm, signalLost, started) {
+    // Each change of style is written down with the day it was worked out from, so a
+    // map that went light at the wrong time can be checked against the almanac.
+    LaunchedEffect(light, started) {
+        if (!started) return@LaunchedEffect
+        RideLog.write(context, "MAP", (if (light) "day style (light)" else "night style (dark)") +
+            " — sun up " + Sun.describe(System.currentTimeMillis(), lat ?: HOME_LAT, lon ?: HOME_LON) +
+            String.format(java.util.Locale.US, " at %.2f,%.2f", lat ?: HOME_LAT, lon ?: HOME_LON))
+    }
+
+    LaunchedEffect(lat, lon, speedKmh, alarm, signalLostFor, signalAlert, light, started) {
         val view = web ?: return@LaunchedEffect
         if (!started || lat == null || lon == null) return@LaunchedEffect
         val state = JSONObject()
@@ -143,7 +162,10 @@ fun RiderMap(
             .put("moving", speedKmh >= 3)
             .put("stopped", stoppedLabel ?: "stopped")
             .put("alarm", alarm)
-            .put("lost", signalLost)
+            .put("lost", signalLostFor != null)
+            .put("lostFor", signalLostFor ?: "")
+            .put("alert", signalAlert)
+            .put("light", light)
         view.evaluateJavascript("moto.update($state);", null)
     }
 

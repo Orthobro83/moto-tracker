@@ -42,8 +42,8 @@ object Trip {
     const val RESUME_OBVIOUS_KMH = 25.0
     const val RESUME_OBVIOUS_TICKS = 2
 
-    private const val PREFS = "trip"
-    private const val KEY_STATE = "state"
+    const val PREFS = "trip"
+    const val KEY_STATE = "state"
     private const val KEY_STARTED = "started_at"
     private const val KEY_OFF_SINCE = "off_bike_since"
     private const val KEY_RODE = "rode_in_this_trip"
@@ -54,6 +54,11 @@ object Trip {
 
     private var movingSinceMs = 0L
     private var obviousTicks = 0
+
+    /** The last position off the bike showed the bike moving: keep the fast rate. */
+    @Volatile
+    var moving = false
+        private set
 
     fun state(ctx: Context): State {
         cached?.let { return it }
@@ -105,6 +110,7 @@ object Trip {
         else if (value == State.IDLE) edit.remove(KEY_RODE)
         edit.commit()
         movingSinceMs = 0
+        moving = false
         RideLog.write(ctx, "TRIP", "state -> ${value.name.lowercase()}")
     }
 
@@ -154,15 +160,18 @@ object Trip {
      */
     fun noticeMovement(ctx: Context, speedKmh: Double): Boolean {
         if (!autoResume(ctx)) {
+            moving = false
             movingSinceMs = 0
             obviousTicks = 0
             return false
         }
         if (state(ctx) != State.OFF_BIKE) {
+            moving = false
             movingSinceMs = 0
             obviousTicks = 0
             return false
         }
+        moving = speedKmh >= RESUME_KMH
         // Unmistakably riding: settled in about ten seconds.
         if (speedKmh >= RESUME_OBVIOUS_KMH) {
             obviousTicks++
@@ -187,6 +196,15 @@ object Trip {
         movingSinceMs = 0
         return true
     }
+
+    /**
+     * How often a position is wanted. Off the bike and standing still it is the slow
+     * [Config.OFF_BIKE_TICK_MS]; riding is the full rate. Off the bike but moving
+     * stays at the full rate too, so the pull-away rules in [noticeMovement] settle
+     * in seconds rather than minutes and crash detection is not left off.
+     */
+    fun tickMs(ctx: Context): Long =
+        if (state(ctx) == State.OFF_BIKE && !moving) Config.OFF_BIKE_TICK_MS else Config.TICK_MS
 
     /** Sensors and crash detection run while riding, and only then. */
     fun sensorsWanted(ctx: Context) = state(ctx) == State.RIDING

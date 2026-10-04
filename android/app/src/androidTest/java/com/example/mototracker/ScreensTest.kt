@@ -32,12 +32,11 @@ class ScreensTest {
             .put("speed", speed).put("battery", 81).put("last_seen_s", lastSeen)
             .put("lat", 13.6929).put("lon", -89.2182))
 
-    private fun shoot(name: String, tripState: Trip.State, drawerOpen: Boolean, meState: String = "riding",
-                      solo: Boolean = false) {
+    private fun shoot(name: String, tripState: Trip.State, drawerOpen: Boolean, meState: String = "riding") {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity {
                 it.showForTest(rider("jack", "Jack", meState, 63.0, 2.1),
-                    rider("dana", "Dana", if (solo) "idle" else "riding", 47.0, 3.4), tripState, drawerOpen, solo)
+                    rider("dana", "Dana", "riding", 47.0, 3.4), tripState, drawerOpen)
             }
             Thread.sleep(2500)
             // The view draws itself into a bitmap: the emulator's screen captures come
@@ -54,7 +53,6 @@ class ScreensTest {
         }
     }
 
-    @Test fun rider() = shoot("0-rider", Trip.State.RIDING, drawerOpen = false, solo = true)
     @Test fun observer() = shoot("1-observer", Trip.State.IDLE, drawerOpen = false)
     @Test fun observerDrawer() = shoot("2-observer-drawer", Trip.State.IDLE, drawerOpen = true)
     @Test fun hybridRiding() = shoot("3-hybrid-riding", Trip.State.RIDING, drawerOpen = false)

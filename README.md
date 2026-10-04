@@ -66,7 +66,7 @@ and scene code.*
 ## How it fits together
 
 ```
- Android phone (rider A) ─┐                        ┌─> Mac monitor: live map, alarm,
+ Android phone (rider A) ─┐                        ┌─> Mac app: live map, alarm,
                           ├──> relay (small VPS) ──┤    trip archive, replay
  Android phone (rider B) ─┘                        └─> the other phone, as Observer
 ```
@@ -75,29 +75,28 @@ and scene code.*
 |---|---|
 | `android/` | Kotlin/Jetpack Compose app. Rider, Observer and Hybrid modes, sensor sampling, the (untested) crash detector in `Detector.kt` |
 | `relay/` | Python relay: pairing, live state, trips and incidents. Runs on a small VPS behind HTTPS |
-| `monitor/` | Python monitor for the Mac: web UI, alarm, archive, replay, map tiles |
-| `app/` | Small Swift wrapper app for macOS |
+| `app/` | The Mac app, in Swift: live map, alarm, trip archive, replay, map tiles. It talks to the relay directly, with no local server |
 | `server/` | Earlier single-machine server from the prototyping phase |
 | `analysis/` | Scripts that work out each rider's baseline from the ride archive |
 
-## Try the monitor without any hardware
+## Try the Mac app without any hardware
 
-The demo starts a throwaway relay and monitor in a temporary directory and sends them a
-made-up ride. It touches nothing real, and it only needs the Python that ships with macOS:
+The demo starts a throwaway relay and a second copy of the Mac app in a temporary
+directory and sends them a made-up ride. It touches nothing real, and it only needs the Python that ships with macOS:
 
 ```bash
-/usr/bin/python3 monitor/demo.py --both
+/usr/bin/python3 app/demo.py --both
 ```
 
-Then open the URL it prints. Other flags: `--idle`, `--incident 25` (a simulated crash
+The app's window opens by itself. Other flags: `--idle`, `--incident 25` (a simulated crash
 alarm), `--drop 20` (one rider's data stops arriving). The map needs a TomTom API key
-(see `monitor/config.py`). Everything else works without one.
+(see `app/Core/Config.swift`). Everything else works without one.
 
 ## Tests
 
 ```bash
 /usr/bin/python3 relay/both_riding_test.py
-/usr/bin/python3 monitor/e2e_test.py
+/usr/bin/python3 app/e2e_test.py
 cd android && ./gradlew testDebugUnitTest
 ```
 

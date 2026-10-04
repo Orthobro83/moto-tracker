@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -56,6 +57,8 @@ private val GO = Color(0xFF3DDC84)
 private val WARN = Color(0xFFFFB020)
 private val BAD = Color(0xFFFF4D4F)
 private val ALARM = Color(0xFFA1121F)
+/** A signal loss: true yellow, apart from the amber of "stopped", as on the Macs. */
+private val SIG = Color(0xFFFFD60A)
 
 /** The collapsed drawer: tall enough to hit with a gloved thumb. */
 private val DRAWER_BAR = 52.dp
@@ -154,10 +157,10 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(tripState) {
             if (tripState != Trip.State.IDLE) showDiagnostics = false
         }
-        // The screen polls only while it IS the screen (Jack, 2026-09-16): nothing
-        // sits in the background waiting for a ride to begin. Coming back to the
-        // foreground asks the relay straight away — is anyone riding? — and the answer
-        // decides whether this is the home screen or Observer mode.
+        // The screen polls fast while it IS the screen; the listener service does the
+        // slow listening behind it (Jack, 2026-09-27). Coming back to the foreground
+        // asks the relay straight away — is anyone riding? — and the answer decides
+        // whether this is the home screen or Observer mode.
         LaunchedEffect(Unit) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 while (true) {
@@ -170,12 +173,11 @@ class MainActivity : ComponentActivity() {
                         tripState = Trip.state(ctx)
                         val fresh = snap
                         val theirTrip = fresh?.other(ctx)?.takeIf { it.tripId != null }
+                        // Listening outlives this screen, so it belongs to a service.
+                        // Started here too, so pairing is all it takes to begin.
+                        ObserverService.start(ctx)
                         if (tripState == Trip.State.IDLE && theirTrip != null) {
-                            // Observer mode keeps listening with the app in the
-                            // background, so it is handed to a service that outlives
-                            // this screen. It retires itself when their trip ends.
                             ObserverService.watching = theirTrip.name
-                            if (!ObserverService.running) ObserverService.start(ctx)
                         } else if (tripState == Trip.State.IDLE && fresh != null) {
                             withContext(Dispatchers.IO) {
                                 runCatching { IncidentWatch.decide(ctx, fresh) }
@@ -229,6 +231,17 @@ class MainActivity : ComponentActivity() {
                 val other = snap?.other(ctx)
                 val mine = me?.incident
                 val theirs = other?.incident
+
+                // Like Waze: while anyone is out, the screen stays on for as long as
+                // this app is in front (Jack, 2026-09-27). The home screen with nobody
+                // out times out as normal, so a phone left open on a table sleeps.
+                val live = tripState != Trip.State.IDLE || other?.tripId != null ||
+                    mine != null || theirs != null
+                DisposableEffect(live) {
+                    if (live) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    onDispose { }
+                }
 
                 // The screens get the space between the header and the footer, and
                 // place their own buttons at the bottom of it.
@@ -411,6 +424,21 @@ class MainActivity : ComponentActivity() {
                 + "watched for until you press Start ride.",
                 color = WARN, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
         }
+        // Android makes the listener post a notice; one tap switches it off for good,
+        // and the listening carries on (Jack, 2026-09-28). Asked again on every return.
+        val notice = remember(resumeCount) { ObserverService.running && ObserverService.noticeShown(ctx) }
+        if (notice) {
+            TextButton({
+                runCatching {
+                    startActivity(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        .putExtra(Settings.EXTRA_CHANNEL_ID, ObserverService.CHANNEL))
+                }
+            }, Modifier.padding(bottom = 4.dp)) {
+                Text("Hide the \"Listening for rides\" notification — switch it off on the next screen",
+                    color = DIM, fontSize = 12.sp)
+            }
+        }
         BigButton("Start trip", GO, enabled = !busy) {
             act({ Trip.startTrip(ctx) }, "trip open — press Start ride when you set off")
         }
@@ -580,7 +608,7 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(12.dp))
             PendingBanner(theirs)
             Spacer(Modifier.height(2.dp))
-            WatchedMap(other, theirs, weather, 280.dp)
+            WatchedMap(other, theirs, weather, 280.dp, tick)
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
@@ -610,12 +638,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** The other rider on a map, with the weather where they are sitting on it. */
+    /**
+     * The other rider on a map, with the weather where they are sitting on it. [tick]
+     * is the second it is drawn for, so a signal loss counts up in real time.
+     */
     @Composable
     private fun WatchedMap(
         other: Relay.Rider, theirs: Relay.Incident?, weather: Weather.Now?,
-        height: androidx.compose.ui.unit.Dp,
+        height: androidx.compose.ui.unit.Dp, tick: Long,
     ) {
+        // Unheard for a minute: "Signal lost for m:ss" over the last known position.
+        // Past two: a bar across the top of the map as well (Jack, 2026-09-29).
+        val lost = other.signal
+        val lostFor = lost?.lostFor(tick + (Relay.relayNow() - System.currentTimeMillis()))
+        // Light from sunrise, dark from sunset, worked out for the date and where the
+        // rider is (Jack, 2026-09-29) — re-asked every second, so it turns on time.
+        val light = Sun.isUp(tick, other.lat ?: HOME_LAT, other.lon ?: HOME_LON)
         Box {
             RiderMap(
                 lat = other.lat, lon = other.lon,
@@ -623,8 +661,23 @@ class MainActivity : ComponentActivity() {
                 stoppedLabel = if (other.state == "offbike") "off the bike" else "stopped",
                 alarm = theirs != null && theirs.state == "sos",
                 height = height,
-                signalLost = !other.lastSeenS.isNaN() && other.lastSeenS >= Config.SIGNAL_LOST_S,
+                signalLostFor = lostFor,
+                signalAlert = lost?.alert == true,
+                light = light,
             )
+            // Black, yellow text, across the top of the map, as on the Macs. Drawn here
+            // rather than in the map page, so it shows even if the map could not load.
+            if (lost?.alert == true) {
+                Text(
+                    "Signal lost for $lostFor. Awaiting acquisition of signal.",
+                    color = SIG, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                        .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
+                        .background(Color.Black)
+                        .padding(horizontal = 12.dp, vertical = 9.dp)
+                )
+            }
             // The weather sits on the map, as it does on the Mini: one glyph for
             // what it is doing outside, the wind underneath (Jack, 2026-09-16).
             weather?.let {
@@ -650,11 +703,7 @@ class MainActivity : ComponentActivity() {
             Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(12.dp))
                 .background(WARN.copy(alpha = 0.12f)).padding(14.dp)
         ) {
-            Text(
-                if (theirs.kind == "lost") "No signal — watching"
-                else "Possible crash — checking",
-                color = WARN, fontSize = 16.sp, fontWeight = FontWeight.SemiBold
-            )
+            Text("Possible crash — checking", color = WARN, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Text("Nothing has been raised. It clears itself if the ride carries on.",
                 color = DIM, fontSize = 13.sp)
         }
@@ -724,7 +773,7 @@ class MainActivity : ComponentActivity() {
         // is measured once here, and the drawer slides over it rather than moving it.
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(bottom = 8.dp)) {
             val h = maxHeight
-            if (h > 80.dp) key(h) { WatchedMap(other, theirs, weather, h) }
+            if (h > 80.dp) key(h) { WatchedMap(other, theirs, weather, h, tick) }
         }
     }
 
@@ -813,21 +862,19 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * The screenshot test's way in (androidTest ScreensTest): Rider, Observer or Hybrid
-     * on made-up relay data (solo = this phone riding with the other at home), so the layout can be looked at without a relay or a ride.
+     * The screenshot test's way in (androidTest ScreensTest): Observer or Hybrid on
+     * made-up relay data, so the layout can be looked at without a relay or a ride.
      * The buttons do nothing here.
      */
     @androidx.annotation.VisibleForTesting
-    internal fun showForTest(me: Relay.Rider?, other: Relay.Rider, tripState: Trip.State, drawerOpen: Boolean,
-                             solo: Boolean = false) {
+    internal fun showForTest(me: Relay.Rider?, other: Relay.Rider, tripState: Trip.State, drawerOpen: Boolean) {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = BG, surface = PANEL)) {
                 Surface(Modifier.fillMaxSize(), color = BG) {
                     Column(Modifier.fillMaxSize().padding(horizontal = 18.dp)) {
                         Header(120L, null)
                         Column(Modifier.weight(1f).fillMaxWidth()) {
-                            if (solo) RidingScreen(me, System.currentTimeMillis(), false, { _, _ -> }, "")
-                            else WithDrawer(tripState, false, { _, _ -> }, "", drawerOpen) {
+                            WithDrawer(tripState, false, { _, _ -> }, "", drawerOpen) {
                                 if (tripState == Trip.State.IDLE)
                                     ObserverScreen(other, other.incident, null, System.currentTimeMillis())
                                 else HybridScreen(me, other, other.incident, null, tripState,
@@ -866,9 +913,6 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.height(8.dp))
             val detail = when {
                 inc.kind == "help" -> "${other.name} pressed I need help"
-                inc.kind == "lost" -> "${other.name} · no signal since " +
-                    java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
-                        .format(java.util.Date(Time.parse(inc.raisedAt) ?: 0))
                 else -> buildString {
                     append(other.name)
                     if (!inc.g.isNaN() && inc.g > 0)

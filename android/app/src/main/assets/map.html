@@ -12,12 +12,23 @@
   .speedbub{background:rgba(17,20,26,.9);border:1px solid #2a2f37;border-radius:9px;
     padding:3px 9px;font:13px ui-monospace,Menlo,monospace;color:#e8eaed;white-space:nowrap}
   .speedbub.stopped{color:#ffb020;border-color:#ffb020}
-  /* Nothing heard for a minute: not known to be stopped, only not heard (2026-09-24). */
-  .speedbub.lost{color:#8b949e;border-color:#3a4048}
+  /* Nothing heard for a minute: not known to be stopped, only not heard (2026-09-24).
+     The last known position, outlined in yellow (Jack, 2026-09-29). */
+  .speedbub.lost{color:#e8eaed;border:2px solid #ffd60a;padding:2px 8px}
+  /* Past two minutes the app lays a bar across the top of the map; the zoom steps down. */
+  body.sig .leaflet-top{top:38px}
   .leaflet-tooltip-own{background:transparent;border:0;box-shadow:none;padding:0}
   .rider-dot{width:16px;height:16px;border-radius:50%;background:#4da3ff;border:2px solid #fff;
     box-shadow:0 0 0 4px rgba(77,163,255,.28)}
   .rider-dot.red{background:#ff4d4f;box-shadow:0 0 0 6px rgba(255,77,79,.35)}
+  /* Light by day, dark by night (Jack, 2026-09-29): TomTom's day style is hard to beat
+     in sunshine. The page around the tiles follows it; the dot gets a dark edge, since
+     its white one vanishes against white roads. */
+  html.light, html.light body, html.light #map, html.light .leaflet-container{background:#e9e6df}
+  html.light .leaflet-control-attribution{background:rgba(255,255,255,.75);color:#555}
+  html.light .leaflet-control-attribution a{color:#555}
+  html.light .rider-dot{box-shadow:0 0 0 4px rgba(26,111,214,.3),0 0 0 5px rgba(0,0,0,.35)}
+  html.light .rider-dot.red{box-shadow:0 0 0 6px rgba(255,77,79,.4),0 0 0 7px rgba(0,0,0,.35)}
 </style>
 </head>
 <body>
@@ -30,18 +41,33 @@
  * The TomTom key is handed in by the app after it has fetched it from the relay —
  * it is never in this file, never in the APK, and never reaches the VPS as traffic:
  * these tiles come straight from TomTom to this phone (Jack, 2026-09-16).
+ *
+ * Light by day and dark by night (Jack, 2026-09-29). The app works out sunrise and
+ * sunset where the rider is and says which; the Macs keep the night style.
  */
 var moto = (function () {
   var map, base, traffic, marker, bubble, trail, following = true, trafficAt = 0;
+  var key = '', light = false;
+
+  function baseUrl() {
+    return 'https://api.tomtom.com/map/1/tile/basic/' + (light ? 'main' : 'night') +
+      '/{z}/{x}/{y}.png?key=' + key;
+  }
+  function trafficUrl() {
+    return 'https://api.tomtom.com/traffic/map/4/tile/flow/' + (light ? 'relative0' : 'relative0-dark') +
+      '/{z}/{x}/{y}.png?key=' + key;
+  }
+  function trailColour() { return light ? '#1a6fd6' : '#4da3ff'; }
+  function theme() { document.documentElement.classList.toggle('light', light); }
   // Counted so the app can say why a map is blank rather than just showing black
   // (2026-09-20: it drew nothing on the phone and nothing was written down).
   var tiles = { loaded: 0, failed: 0 };
 
-  function start(key, heightPx) {
+  function start(k, heightPx, isLight) {
     if (window.__motoReady) return 'already started';
     if (typeof L === 'undefined') return 'leaflet did not load';
     try {
-      build(key, heightPx);
+      build(k, heightPx, !!isLight);
     } catch (e) {
       window.__motoError = String(e && e.message || e);
       return 'failed: ' + window.__motoError;
@@ -49,7 +75,10 @@ var moto = (function () {
     return 'ok';
   }
 
-  function build(key, heightPx) {
+  function build(k, heightPx, isLight) {
+    key = k;
+    light = isLight;
+    theme();
     // The app tells us how tall it is, because this page cannot find out for
     // itself: inside a scrolling Android view its own viewport measures zero, and
     // then height:100% is zero too. On 2026-09-20 the map ran perfectly — tiles
@@ -64,15 +93,11 @@ var moto = (function () {
       .setView([13.69, -89.22], 14);
     L.control.zoom({ position: 'topright' }).addTo(map);
     map.attributionControl.setPrefix('').addAttribution('TomTom');
-    base = L.tileLayer(
-      'https://api.tomtom.com/map/1/tile/basic/night/{z}/{x}/{y}.png?key=' + key,
-      { maxZoom: 19, minZoom: 3 }).addTo(map);
+    base = L.tileLayer(baseUrl(), { maxZoom: 19, minZoom: 3 }).addTo(map);
     base.on('tileload', function () { tiles.loaded++; });
     base.on('tileerror', function () { tiles.failed++; });
-    traffic = L.tileLayer(
-      'https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png?key=' + key,
-      { maxZoom: 19, minZoom: 3, opacity: 0.95 }).addTo(map);
-    trail = L.polyline([], { color: '#4da3ff', weight: 3, opacity: 0.75 }).addTo(map);
+    traffic = L.tileLayer(trafficUrl(), { maxZoom: 19, minZoom: 3, opacity: 0.95 }).addTo(map);
+    trail = L.polyline([], { color: trailColour(), weight: 3, opacity: 0.75 }).addTo(map);
     marker = L.marker([13.69, -89.22], {
       icon: L.divIcon({ className: '', html: '<div class="rider-dot"></div>',
                         iconSize: [16, 16], iconAnchor: [8, 8] })
@@ -86,15 +111,29 @@ var moto = (function () {
     window.__motoReady = true;
   }
 
+  /* Sunrise or sunset: the same map, the other style, without starting again. */
+  function setLight(isLight) {
+    if (!map || isLight === light) return;
+    light = isLight;
+    theme();
+    base.setUrl(baseUrl());
+    trafficAt = Date.now();
+    traffic.setUrl(trafficUrl() + '&t=' + Math.floor(trafficAt / 1000));
+    trail.setStyle({ color: trailColour() });
+  }
+
   /* Called every second or so by the app. */
   function update(state) {
-    if (!map || state.lat == null) return;
+    if (!map) return;
+    if (typeof state.light === 'boolean') setLight(state.light);
+    if (state.lat == null) return;
     var here = [state.lat, state.lon];
     marker.setLatLng(here);
     var dot = marker.getElement() && marker.getElement().querySelector('.rider-dot');
     if (dot) dot.className = 'rider-dot' + (state.alarm ? ' red' : '');
+    document.body.classList.toggle('sig', !!state.alert);
     if (state.lost) {
-      bubble.setContent('<div class="speedbub lost">Signal lost</div>');
+      bubble.setContent('<div class="speedbub lost">Signal lost for ' + (state.lostFor || '') + '</div>');
     } else {
       bubble.setContent('<div class="speedbub' + (state.moving ? '' : ' stopped') + '">' +
         (state.moving ? Math.round(state.speed) + ' km/h' : (state.stopped || 'stopped')) + '</div>');
@@ -127,6 +166,7 @@ var moto = (function () {
     return JSON.stringify({
       ready: !!window.__motoReady,
       error: window.__motoError || null,
+      style: light ? 'light' : 'dark',
       loaded: tiles.loaded, failed: tiles.failed,
       size: map ? [map.getSize().x, map.getSize().y] : null
     });

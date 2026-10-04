@@ -68,11 +68,30 @@ class MapPageTest {
             }
             assertEquals("the speed bubble is wrong $problems", "\"40 km/h\"",
                 js(web, "document.querySelector('.speedbub').textContent"))
-            // A minute unheard is "Signal lost", in grey, never "stopped" (2026-09-24).
-            js(web, "moto.update({lat:13.6929,lon:-89.2182,speed:0,moving:false,stopped:'off the bike',alarm:false,lost:true});")
-            assertEquals("a lost signal still says stopped $problems", "\"Signal lost\"",
+            // A minute unheard is "Signal lost for m:ss", never "stopped" (2026-09-24),
+            // outlined in yellow (Jack, 2026-09-29).
+            js(web, "moto.update({lat:13.6929,lon:-89.2182,speed:0,moving:false,stopped:'off the bike',alarm:false,lost:true,lostFor:'1:05',alert:false});")
+            assertEquals("a lost signal still says stopped $problems", "\"Signal lost for 1:05\"",
                 js(web, "document.querySelector('.speedbub').textContent"))
             assertEquals("\"speedbub lost\"", js(web, "document.querySelector('.speedbub').className"))
+            assertEquals("the zoom stepped down for no bar", "false", js(web, "document.body.classList.contains('sig')"))
+            // Past two minutes the app's bar takes the top of the map; the zoom steps down.
+            js(web, "moto.update({lat:13.6929,lon:-89.2182,speed:0,moving:false,alarm:false,lost:true,lostFor:'2:01',alert:true});")
+            assertEquals("\"Signal lost for 2:01\"", js(web, "document.querySelector('.speedbub').textContent"))
+            assertEquals("the zoom did not step down for the bar", "true", js(web, "document.body.classList.contains('sig')"))
+            // Light by day, dark by night (Jack, 2026-09-29): the app says which, and the
+            // page swaps TomTom's style in place.
+            assertEquals("the map did not start dark", "false", js(web, "document.documentElement.classList.contains('light')"))
+            js(web, "moto.update({lat:13.6929,lon:-89.2182,speed:40,moving:true,alarm:false,light:true});")
+            assertEquals("the page did not turn light", "true", js(web, "document.documentElement.classList.contains('light')"))
+            waitFor("TomTom's day tiles to be asked for") {
+                js(web, "[...document.querySelectorAll('.leaflet-tile')].some(t => t.src.includes('/basic/main/'))") == "true"
+            }
+            js(web, "moto.update({lat:13.6929,lon:-89.2182,speed:40,moving:true,alarm:false,light:false});")
+            assertEquals("the page did not turn dark again", "false", js(web, "document.documentElement.classList.contains('light')"))
+            waitFor("TomTom's night tiles to be asked for again") {
+                js(web, "[...document.querySelectorAll('.leaflet-tile')].some(t => t.src.includes('/basic/night/'))") == "true"
+            }
             assertTrue("the page reported errors: $problems", problems.isEmpty())
         }
     }

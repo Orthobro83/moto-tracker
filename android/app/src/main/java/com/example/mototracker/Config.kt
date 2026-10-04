@@ -20,6 +20,13 @@ object Config {
     const val TICK_MS = 5_000L
 
     /**
+     * Off the bike and standing still, a fix every 30 s is plenty and costs far less
+     * battery (Jack, 2026-10-04). Riding, or any sign of movement, is back to
+     * [TICK_MS] at once.
+     */
+    const val OFF_BIKE_TICK_MS = 30_000L
+
+    /**
      * Network test probe interval. Finer than a tick, so each switch-over can be
      * timed to within a few seconds. A failed probe adds the 4 s connect timeout.
      */
@@ -36,10 +43,11 @@ object Config {
     const val CONFIRM_WINDOW_S = 30
 
     /**
-     * Nothing heard from the other rider for this long, and the map says "Signal lost"
-     * rather than how long they have been stopped: they are not known to be stopped,
-     * only not heard (Jack, 2026-09-24). The relay's own plain-silence threshold, which
-     * clears the 30-70 s a wifi-to-mobile handover costs.
+     * Nothing heard from the other rider for this long, and the map says "Signal lost
+     * for m:ss" rather than how long they have been stopped: they are not known to be
+     * stopped, only not heard (Jack, 2026-09-24). The relay decides this since relay-15
+     * (Relay.Signal); this is the old rule, kept only for an older relay. It clears the
+     * 30-70 s a wifi-to-mobile handover costs.
      */
     const val SIGNAL_LOST_S = 60
 

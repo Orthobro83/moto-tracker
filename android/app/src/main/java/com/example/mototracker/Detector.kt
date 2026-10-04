@@ -1,16 +1,5 @@
 package com.example.mototracker
 
-/*
- * WARNING: UNTESTED SAFETY LOGIC. DO NOT RELY ON THIS.
- *
- * This crash detection has never been tested against a real crash, because no
- * crash data exists. It has only been tuned to stay quiet during normal riding.
- * It may miss a real crash entirely, fire when nothing happened, or fail
- * silently because of a dead battery, lost signal, OS power management or a bug.
- * It is not a safety device, emergency service or substitute for one. Nobody
- * should rely on it, ever, for anyone's safety. See the README.
- */
-
 import kotlin.math.max
 
 /**
@@ -24,8 +13,8 @@ import kotlin.math.max
  * the archive gives is the opposite, and it is enough — **how violent normal riding
  * gets for each rider**:
  *
- *     Dana  peak 3.65 g median, 8.75 g at p99.9, 8.79 g worst    rot 5.54 at p99.9
- *     Jack  peak 2.19 g median, 5.88 g at p99.9, 5.88 g worst    rot 3.81 at p99.9
+ *     Dana   peak 3.65 g median, 8.75 g at p99.9, 8.79 g worst    rot 5.54 at p99.9
+ *     Jack      peak 2.19 g median, 5.88 g at p99.9, 5.88 g worst    rot 3.81 at p99.9
  *
  * Her ordinary riding reaches forces that would be a fair guess at "crash" for him.
  * A single fixed threshold would therefore either miss his crash or fire all day on

@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.os.BatteryManager
 import android.os.IBinder
 import com.google.android.gms.location.LocationCallback
@@ -24,7 +25,8 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * Foreground service, location type, 5-second FusedLocationProvider ticks.
+ * Foreground service, location type, FusedLocationProvider ticks: every 5 s while
+ * riding, every 30 s off the bike and standing still (Trip.tickMs).
  *
  * Countermeasures this relies on, all granted by hand per phone and none of them
  * available to the app itself (design.md "OS interference"):
@@ -39,6 +41,34 @@ class TrackerService : Service() {
     private val engine = Detector.Engine()
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private var ticks = 0
+
+    /** The interval the location request is currently running at. */
+    private var tickMs = 0L
+
+    /**
+     * Off the bike the phone reports every 30 s, riding every 5 s. A button press
+     * changes the trip state from outside the service, so the rate follows the state
+     * itself rather than waiting for the next (slow) fix to notice.
+     */
+    private val stateWatch = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Trip.KEY_STATE) applyCadence()
+    }
+
+    @Synchronized
+    private fun applyCadence() {
+        val want = Trip.tickMs(this)
+        if (want == tickMs) return
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, want)
+            .setMinUpdateIntervalMillis(want)
+            .setWaitForAccurateLocation(false)
+            .build()
+        runCatching { client.requestLocationUpdates(request, callback, mainLooper) }
+            .onSuccess {
+                RideLog.write(this, "SVC", "location every ${want / 1000} s (was ${tickMs / 1000} s)")
+                tickMs = want
+            }
+            .onFailure { RideLog.write(this, "SVC", "requestLocationUpdates failed: ${it.message}") }
+    }
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -102,6 +132,8 @@ class TrackerService : Service() {
                 // phone is observing somebody else (Jack, 2026-09-16).
                 if (ok) runCatching { IncidentWatch.poll(this@TrackerService) }
             }
+            // Movement seen off the bike speeds the rate up; stopping again slows it.
+            applyCadence()
         }
     }
 
@@ -145,13 +177,8 @@ class TrackerService : Service() {
         // switch-over that caused it.
         NetWatch.start(this)
 
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, Config.TICK_MS)
-            .setMinUpdateIntervalMillis(Config.TICK_MS)
-            .setWaitForAccurateLocation(false)
-            .build()
-
-        runCatching { client.requestLocationUpdates(request, callback, mainLooper) }
-            .onFailure { RideLog.write(this, "SVC", "requestLocationUpdates failed: ${it.message}") }
+        getSharedPreferences(Trip.PREFS, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(stateWatch)
+        applyCadence()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -172,6 +199,7 @@ class TrackerService : Service() {
         // from the log is just as informative as its presence.
         RideLog.write(this, "SVC", "onDestroy after $ticks ticks")
         engine.reset()
+        getSharedPreferences(Trip.PREFS, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(stateWatch)
         runCatching { client.removeLocationUpdates(callback) }
         runCatching { sensors.stop() }
         runCatching { NetWatch.stop(this) }
@@ -179,6 +207,8 @@ class TrackerService : Service() {
         // Nothing to announce here: announcing off-bike on destroy would be wrong,
         // because off-bike deliberately keeps the service running.
         io.cancel()
+        // The trip is over: back to listening for the other rider.
+        ObserverService.start(this)
         super.onDestroy()
     }
 

@@ -44,7 +44,7 @@ HERE = Path(__file__).parent
 DB = Path(os.environ.get("RELAY_DB", "/var/lib/moto-relay/relay.db"))
 HOST = os.environ.get("RELAY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RELAY_PORT", "8088"))
-VERSION = "relay-13"
+VERSION = "relay-16"   # relay-16 (2026-10-04): off the bike, signal loss after 2 min
 
 # How much recent telemetry a newly-connected monitor replays.
 TELEMETRY_WINDOW_MIN = 60
@@ -56,35 +56,47 @@ PRUNE_EVERY_S = 300
 MAX_LOG_BYTES = 5 * 1024 * 1024
 PAIR_CODE_TTL_S = 600
 ESCALATE_EVERY_S = 1
-# "Cessation of motion OR signal" (Jack, 2026-09-16). A phone cannot report its own
-# silence, so the relay watches for it. Silence alone is never an alarm — rural gaps
-# are ordinary, and the walk tests lost 38.8 s legitimately — but silence that
-# FOLLOWS a baseline deviation or a speed collapse is the signature of a phone that
-# stopped reporting because the bike stopped violently.
-SILENCE_WITH_CONTEXT_S = 30     # violent window, then nothing: raise a candidate
-SILENCE_PLAIN_S = 60            # quiet with no context: say so once, raise nothing.
-                                # A minute, not two (Jack, 2026-09-16): a frozen dot
-                                # with no explanation is itself alarming, and the
-                                # longest legitimate gap ever measured here was the
-                                # walk test's 38.8 s, so a minute still clears it.
-SILENCE_CONTEXT_WINDOW_S = 60   # how far back to look for that context
+# A phone cannot report its own silence, so the relay watches for it. Signal loss is
+# never on its own a reason to open an incident (Jack, 2026-09-29): g-force or
+# rotation before the silence is. Rural gaps and storms are ordinary — on 2026-09-29
+# Dana went unheard for 3.5 minutes after 46 km/h, perfectly well, and the relay's
+# old "silence at speed" rule called it a crash. Neither silence after riding speed
+# nor a drop in speed before it opens anything any more; they are reported as what
+# they are, a signal loss (SIGNAL_LOST_S, SIGNAL_ALERT_S).
+SILENCE_WITH_CONTEXT_S = 30     # violent window, then this long unheard: an alarm
+SILENCE_CONTEXT_WINDOW_S = 60   # how far back to look for that violence
 PENDING_SILENCE_S = 18          # design.md: the stale timeout collapses while a
                                 # candidate is pending — a rider who has gone quiet
                                 # mid-candidate is the one least able to retract.
                                 # Eighteen, not eight: packets come every five
                                 # seconds, so eight was one dropped packet.
-# Silence at riding speed with nothing violent before it (Jack, 2026-09-16). It is
-# not an alarm and it never prompts the rider — the relay raises it, and the relay
-# retracts it the instant telemetry resumes. Only a rider who never comes back at
-# all escalates it.
-# Every candidate gets this long for the ride to prove itself ordinary before
-# anyone is woken (Jack, 2026-09-16). Nothing is ever asked of the rider: the
-# evidence is the telemetry itself, and the relay retracts on its own.
+# A signal loss with nothing violent before it is shown, never raised (Jack,
+# 2026-09-29; two minutes off the bike, see OFFBIKE_SIGNAL_LOST_S). After a minute every screen says "Signal lost for m:ss" over the rider's
+# last known position, and the log says what they were last doing — a minute, not two
+# (Jack, 2026-09-16): a frozen dot with no explanation is itself alarming, and the
+# longest legitimate gap measured on the walk tests was 38.8 s. After two minutes the
+# Macs and the Observer phones alert: a bar over the map and a single chime, and a
+# notification on the phones. An alert, not a crash, and it clears itself when the
+# signal comes back. Settable only so the tests need not wait minutes.
+SIGNAL_LOST_S = int(os.environ.get("RELAY_SIGNAL_LOST_S", "60"))
+SIGNAL_ALERT_S = int(os.environ.get("RELAY_SIGNAL_ALERT_S", "120"))
+# Off the bike the phone reports every 30 s instead of every 5 (app 1.0.14), and the
+# risk is low, so a loss is shown only after two minutes, the same moment it alerts
+# (Jack, 2026-10-04). Settable so the tests need not wait minutes.
+OFFBIKE_SIGNAL_LOST_S = int(os.environ.get("RELAY_OFFBIKE_SIGNAL_LOST_S", "120"))
+
+
+def signal_thresholds(state: Optional[str]) -> tuple:
+    """(shown after, alerted after) seconds unheard, for a rider in this state."""
+    if state == "offbike":
+        return OFFBIKE_SIGNAL_LOST_S, max(SIGNAL_ALERT_S, OFFBIKE_SIGNAL_LOST_S)
+    return SIGNAL_LOST_S, SIGNAL_ALERT_S
+
+# Every candidate the phone raises gets this long for the ride to prove itself
+# ordinary before anyone is woken (Jack, 2026-09-16). Nothing is ever asked of the
+# rider: the evidence is the telemetry itself, and the relay retracts on its own.
 MIN_CONFIRM_S = int(os.environ.get("RELAY_MIN_CONFIRM_S", "30"))
 RESUMED_RIDING_KMH = 25.0       # back up to this, with sensors back inside baseline
-SILENCE_AT_SPEED_S = 120        # gone this long, having last been seen riding
-SILENCE_AT_SPEED_KMH = 40.0     # ...at this speed or more
-LOST_CONFIRM_S = 120            # and this long again before anyone is woken
 # One open incident per rider (2026-09-18). A report this close to the open
 # incident is the same event and joins it; anything later is its own.
 JOIN_WINDOW_S = 120
@@ -417,6 +429,24 @@ def rider_state(conn, rider: str) -> str:
     return r["state"] if r else "sleep"
 
 
+def last_heard(conn, trip) -> str:
+    """When this trip last heard from its rider: its newest packet, or the moment it
+    opened if none has arrived yet. A packet from an earlier trip says nothing about
+    this one — measured from yesterday's last packet, a trip opened this morning
+    would begin its life hours "unheard"."""
+    row = conn.execute("SELECT received_at FROM positions WHERE rider_id=? AND trip_id=?"
+                       " ORDER BY id DESC LIMIT 1", (trip["rider_id"], trip["id"])).fetchone()
+    return row["received_at"] if row else trip["started_at"]
+
+
+def clock(seconds: float) -> str:
+    """A duration the way every screen writes one: m:ss, or h:mm:ss past the hour."""
+    s = int(seconds)
+    h, rest = divmod(s, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 def set_state(conn, rider: str, state: str) -> None:
     conn.execute("UPDATE riders SET state=? WHERE id=?", (state, rider))
     emit(conn, "rider", snapshot(conn, "riders", rider), rider)
@@ -547,40 +577,46 @@ def trip_force_end(r: RiderRef, dev: dict = Depends(device)):
 def position(p: Position, dev: dict = Depends(device)):
     """Every packet belongs to the open trip, tagged with the state at the time."""
     act_for(dev, p.rider)
+    stamp = now()
     with tx() as conn:
         require_rider(conn, p.rider)
         trip = active_trip(conn, p.rider)
         st = rider_state(conn, p.rider)
+        heard = last_heard(conn, trip) if trip else None
         cur = conn.execute(
             "INSERT INTO positions (trip_id, rider_id, state, ts, received_at,"
             " lat, lon, accuracy, speed, battery, peak_g, decel, min_g, mean_g,"
             " rms_g, peak_rot, mean_rot, accel_n, gyro_n, peak_horiz_g, mean_horiz_g)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (trip["id"] if trip else None, p.rider, st, p.ts or now(), now(),
+            (trip["id"] if trip else None, p.rider, st, p.ts or stamp, stamp,
              p.lat, p.lon, p.accuracy, p.speed, p.battery, p.peak_g, p.decel,
              p.min_g, p.mean_g, p.rms_g, p.peak_rot, p.mean_rot, p.accel_n, p.gyro_n,
              p.peak_horiz_g, p.mean_horiz_g))
         emit(conn, "position", snapshot(conn, "positions", cur.lastrowid), p.rider)
-        # Normal riding is the evidence. A pending candidate — whatever raised it —
-        # is retracted by the relay itself the moment the telemetry says the rider is
-        # riding on with everything back inside their baseline. A crashed rider does
-        # not ride away; nobody is ever asked, and no prompt is ever put in front of
-        # someone who may be moving (Jack, 2026-09-16).
+        # Normal riding is the evidence. A pending candidate is retracted by the relay
+        # itself the moment the telemetry says the rider is riding on with everything
+        # back inside their baseline. A crashed rider does not ride away; nobody is
+        # ever asked, and no prompt is ever put in front of someone who may be moving
+        # (Jack, 2026-09-16).
         returned = []
-        for row in conn.execute("SELECT id, kind FROM incidents WHERE rider_id=?"
+        for row in conn.execute("SELECT id FROM incidents WHERE rider_id=?"
                                 " AND state='pending'", (p.rider,)).fetchall():
-            if row["kind"] == "lost":
-                why = "signal returned"           # its whole reason was the silence
-            elif normal_riding(conn, p):
-                why = "normal riding resumed"
-            else:
+            if not normal_riding(conn, p):
                 continue
+            why = "normal riding resumed"
             conn.execute("UPDATE incidents SET state='retracted', resolved_at=?,"
                          " resolved_by='relay', resolution=? WHERE id=?", (now(), why, row["id"]))
             emit(conn, "incident", snapshot(conn, "incidents", row["id"]), p.rider)
             returned.append((row["id"], why))
     for iid, why in returned:
         log("info", "incident", f"#{iid} cleared itself — {why} for {p.rider}", p.rider)
+    # The end of a signal loss is said as plainly as its start, so the log shows how
+    # long the rider went unheard (Jack, 2026-09-29).
+    gap = seconds_between(heard, stamp) if heard else 0.0
+    if signal_thresholds(st)[0] <= gap < float("inf"):
+        # Its own tag: a `signal` line after the last packet would read, to the watchdog,
+        # as the next signal loss already having been reported.
+        log("info", "signal-ok", f"signal back after {clock(gap)} — now at {p.speed or 0:.0f} km/h", p.rider)
     late = ""
     if p.ts:
         try:
@@ -762,10 +798,9 @@ def join_candidate(conn, row, fresh: dict, escalate_at: str) -> tuple:
     except ValueError:
         evidence = {}
     kind, due = row["kind"], row["escalate_at"]
-    if row["kind"] in ("lost", "silence"):
+    if row["kind"] == "silence":
         # The phone's own account replaces the relay's inference, and makes it a
-        # candidate like any other. That matters: a `lost` watch is retracted by the
-        # very next packet, and a crash report must not be.
+        # candidate like any other.
         evidence = dict(fresh, relay=evidence)
         if row["state"] == "pending":
             kind = "candidate"
@@ -1013,6 +1048,10 @@ def silence_context(conn, rider: str, last) -> Optional[dict]:
     None. That is the difference between a valley and a crash — design.md keeps them
     as different events, and only one of them is an alarm.
 
+    Violent means g-force or rotation outside the rider's baseline (Jack, 2026-09-29).
+    A drop in speed is not violence: a rider who pulls up at a junction in a dead spot
+    has stopped, not crashed, and until 2026-09-29 that alone raised an alarm here.
+
     Mirrors the phone's detector, including its speed bands: the hardest window is
     judged by how fast the bike was going in the twenty seconds before it, so a
     driveway bump on the way to parking is never read the way a highway impact is.
@@ -1031,8 +1070,9 @@ def silence_context(conn, rider: str, last) -> Optional[dict]:
         " AND state IN ('retracted','closed')", (rider,)).fetchone()["t"]
     if settled and settled > since:
         since = settled
-    rows = conn.execute("SELECT * FROM positions WHERE rider_id=? AND received_at >= ?"
-                        " ORDER BY id", (rider, since)).fetchall()
+    # This trip's packets only: the end of the last one is not this one's violence.
+    rows = conn.execute("SELECT * FROM positions WHERE rider_id=? AND trip_id IS ? AND received_at >= ?"
+                        " ORDER BY id", (rider, last["trip_id"], since)).fetchall()
     if not rows:
         return None
 
@@ -1054,9 +1094,9 @@ def silence_context(conn, rider: str, last) -> Optional[dict]:
         # actually moving in the last few minutes. A bike knocked off its stand
         # outside a café, with the trip still open, is not a rider being hit.
         moved = conn.execute(
-            "SELECT MAX(speed) s FROM positions WHERE rider_id=? AND received_at >= ?",
-            (rider, (datetime.fromisoformat(last["received_at"])
-                     - timedelta(seconds=RECENT_MOTION_S)).isoformat(timespec="milliseconds"))
+            "SELECT MAX(speed) s FROM positions WHERE rider_id=? AND trip_id IS ? AND received_at >= ?",
+            (rider, last["trip_id"], (datetime.fromisoformat(last["received_at"])
+                                      - timedelta(seconds=RECENT_MOTION_S)).isoformat(timespec="milliseconds"))
         ).fetchone()["s"] or 0
         if moved < 15:
             return None
@@ -1068,40 +1108,38 @@ def silence_context(conn, rider: str, last) -> Optional[dict]:
         return dict(common, why=f"impact {hardest:.1f} g (threshold {impact_g:.1f})")
     if spun >= impact_rot:
         return dict(common, why=f"rotation {spun:.1f} rad/s (threshold {impact_rot:.1f})")
-    # A collapse from riding speed to nothing, and then the reporting stopped too.
-    if ended <= 8:
-        return dict(common, why=f"speed fell from {top:.0f} km/h to {ended:.0f} before the silence")
     return None
 
 
 def watch_for_silence() -> None:
-    """A phone cannot report that it has stopped reporting. This does it for them
-    (Jack, 2026-09-16: cessation of motion OR SIGNAL).
+    """A phone cannot report that it has stopped reporting. This does it for them.
+
+    Violence, then silence, is a crash that may have taken the phone with it, and it
+    is an alarm. Silence with nothing violent before it is a signal loss, and it is
+    never an incident (Jack, 2026-09-29): it is said in the log after a minute and
+    again after two, when the screens show it and then alert (signal_view).
 
     Every write happens inside the one transaction; every log line is written after
     it closes. `log()` opens its own connection, and calling it while this one holds
     the write lock deadlocks until the busy timeout expires."""
     notes = []
     with tx() as conn:
-        for rider in conn.execute("SELECT * FROM riders WHERE state='riding'").fetchall():
+        for rider in conn.execute("SELECT * FROM riders WHERE state IN ('riding','offbike')").fetchall():
             if rider["id"] == SMOKE_RIDER:
                 continue
             trip = active_trip(conn, rider["id"])
             if not trip:
                 continue
-            last = conn.execute("SELECT * FROM positions WHERE rider_id=? ORDER BY id DESC LIMIT 1",
-                                (rider["id"],)).fetchone()
-            if not last:
-                continue
-            quiet = (datetime.now(timezone.utc)
-                     - datetime.fromisoformat(last["received_at"])).total_seconds()
-            open_inc = conn.execute(
-                "SELECT * FROM incidents WHERE rider_id=? AND state IN ('pending','sos')"
-                " ORDER BY id DESC LIMIT 1", (rider["id"],)).fetchone()
+            heard = last_heard(conn, trip)
+            quiet = seconds_between(heard, now())
+            last = conn.execute("SELECT * FROM positions WHERE rider_id=? AND trip_id=?"
+                                " ORDER BY id DESC LIMIT 1", (rider["id"], trip["id"])).fetchone()
+            open_inc = open_incident(conn, rider["id"])
 
-            # A candidate is pending and the rider has gone quiet: the stale timeout
-            # collapses (design.md). Whoever cannot answer is who this is for.
-            if open_inc and open_inc["state"] == "pending" and quiet >= PENDING_SILENCE_S:
+            # The phone raised a candidate and has gone quiet since, mid-ride: the stale
+            # timeout collapses (design.md). Whoever cannot answer is who this is for.
+            if (rider["state"] == "riding" and open_inc and open_inc["state"] == "pending"
+                    and quiet >= PENDING_SILENCE_S):
                 if open_inc["escalate_at"] and open_inc["escalate_at"] > now():
                     conn.execute("UPDATE incidents SET escalate_at=? WHERE id=?", (now(), open_inc["id"]))
                     emit(conn, "incident", snapshot(conn, "incidents", open_inc["id"]), rider["id"])
@@ -1118,75 +1156,94 @@ def watch_for_silence() -> None:
             answered = conn.execute(
                 "SELECT state, raised_at FROM incidents WHERE rider_id=?"
                 " ORDER BY id DESC LIMIT 1", (rider["id"],)).fetchone()
-            if (answered and answered["state"] == "retracted"
-                    and answered["raised_at"] > last["received_at"]):
-                continue
+            already_answered = (answered and answered["state"] == "retracted"
+                                and answered["raised_at"] > heard)
 
-            if quiet >= SILENCE_WITH_CONTEXT_S:
+            if (rider["state"] == "riding" and last and not already_answered
+                    and quiet >= SILENCE_WITH_CONTEXT_S):
                 context = silence_context(conn, rider["id"], last)
                 if context:
+                    # Due at once. Its confirm window was the silence itself: the ride
+                    # had half a minute to carry on, and nobody who can retract it is
+                    # there to. So violence then silence alarms at about 31 s (Jack,
+                    # 2026-09-29) — it always did; until then it was dressed up as a
+                    # thirty-second window that the rule above cut short a second later.
                     cur = conn.execute(
                         "INSERT INTO incidents (trip_id, rider_id, raised_at, kind, state, escalate_at,"
                         " evidence) VALUES (?,?,?,?,?,?,?)",
-                        (trip["id"], rider["id"], now(), "silence", "pending",
-                         (datetime.now(timezone.utc) + timedelta(seconds=MIN_CONFIRM_S))
-                         .isoformat(timespec="milliseconds"),
+                        (trip["id"], rider["id"], now(), "silence", "pending", now(),
                          json.dumps(dict(context, quiet_s=round(quiet)))))
                     emit(conn, "incident", snapshot(conn, "incidents", cur.lastrowid), rider["id"])
                     notes.append(("alert", "incident",
                                   f"SIGNAL LOST after {context['why']} — candidate #{cur.lastrowid},"
                                   f" quiet {quiet:.0f}s", rider["id"]))
                     continue
-            if quiet >= SILENCE_AT_SPEED_S and (last["speed"] or 0) >= SILENCE_AT_SPEED_KMH:
-                # Riding, then simply gone. Nothing violent was recorded — the phone
-                # may never have had the chance to send it. Raised as `lost`, which
-                # is the one kind the relay retracts by itself when the rider comes
-                # back, so it can never become a prompt in front of a moving rider.
-                cur = conn.execute(
-                    "INSERT INTO incidents (trip_id, rider_id, raised_at, kind, state, escalate_at,"
-                    " evidence) VALUES (?,?,?,?,?,?,?)",
-                    (trip["id"], rider["id"], now(), "lost", "pending",
-                     (datetime.now(timezone.utc) + timedelta(seconds=LOST_CONFIRM_S))
-                     .isoformat(timespec="milliseconds"),
-                     json.dumps({"why": f"no signal for {quiet:.0f}s, last seen at"
-                                        f" {last['speed'] or 0:.0f} km/h",
-                                 "speed_before": last["speed"] or 0, "quiet_s": round(quiet)})))
-                emit(conn, "incident", snapshot(conn, "incidents", cur.lastrowid), rider["id"])
-                notes.append(("warn", "incident",
-                              f"still nothing from {rider['id']} after {quiet:.0f}s — last seen at"
-                              f" {last['speed'] or 0:.0f} km/h. Watching (#{cur.lastrowid});"
-                              f" it clears itself if the signal comes back", rider["id"]))
-                continue
 
-            if quiet >= SILENCE_PLAIN_S:
-                # Not an alarm. Said once, so the Observer sees a reason rather than
-                # a frozen dot.
-                said = conn.execute(
-                    "SELECT 1 FROM events WHERE rider_id=? AND tag='signal' AND ts >= ?",
-                    (rider["id"], last["received_at"])).fetchone()
-                if not said:
-                    notes.append(("warn", "signal",
-                                  f"signal lost {quiet:.0f}s ago — last seen at"
-                                  f" {last['speed'] or 0:.0f} km/h, nothing violent before it",
-                                  rider["id"]))
+            # A signal loss: shown, said, never raised. Once each, so the log gives a
+            # reason rather than a frozen dot, and records when the screens alerted.
+            lost_s, alert_s = signal_thresholds(rider["state"])
+            if quiet < lost_s:
+                continue
+            if last is None:
+                seen = "nothing heard since the trip opened"
+            elif rider["state"] == "offbike":
+                seen = "last seen off the bike"
+            else:
+                seen = f"last seen at {last['speed'] or 0:.0f} km/h"
+            for tag, due, message in (
+                    ("signal", lost_s,
+                     f"signal lost {quiet:.0f}s ago — {seen}, nothing violent before it"),
+                    ("no-signal", alert_s,
+                     f"signal lost for {clock(quiet)} — {seen}, nothing violent before it."
+                     f" An alert, not an incident")):
+                said = conn.execute("SELECT 1 FROM events WHERE rider_id=? AND tag=? AND ts >= ?",
+                                    (rider["id"], tag, heard)).fetchone()
+                if quiet >= due and not said:
+                    notes.append(("warn", tag, message, rider["id"]))
     for level, tag, message, rider in notes:
         log(level, tag, message, rider)
+
+
+def signal_view(conn, trip, open_inc) -> Optional[dict]:
+    """A rider on a trip who has not been heard from for SIGNAL_LOST_S: since when
+    (relay time), and whether it has gone on long enough to alert (Jack, 2026-09-29).
+    None while they are being heard, and whenever no trip is open.
+
+    The screens show this rather than each working it out, so both Macs and both
+    phones say the same thing at the same moment — and a screen that has lost the
+    relay itself cannot mistake its own silence for the rider's. An open incident
+    outranks the alert: its own alarm is already sounding."""
+    if not trip:
+        return None
+    heard = last_heard(conn, trip)
+    quiet = seconds_between(heard, now())
+    lost_s, alert_s = signal_thresholds(rider_state(conn, trip["rider_id"]))
+    if quiet < lost_s:
+        return None
+    return {"since": heard, "lost_s": round(quiet, 1),
+            "alert": quiet >= alert_s and open_inc is None}
 
 
 def escalate_due() -> int:
     """The default is alarm: a candidate not retracted by its deadline becomes an incident."""
     stamp, escalated = now(), []
     with tx() as conn:
-        for row in conn.execute("SELECT id, rider_id, kind FROM incidents WHERE state='pending'"
+        for row in conn.execute("SELECT id, rider_id, kind, evidence FROM incidents WHERE state='pending'"
                                 " AND escalate_at IS NOT NULL AND escalate_at <= ?", (stamp,)).fetchall():
             conn.execute("UPDATE incidents SET state='sos' WHERE id=? AND state='pending'", (row["id"],))
             emit(conn, "incident", snapshot(conn, "incidents", row["id"]), row["rider_id"])
-            escalated.append((row["id"], row["rider_id"], row["kind"]))
-    for iid, rider, kind in escalated:
-        log("alert", "incident",
-            f"NO SIGNAL FROM {rider.upper()} — #{iid} has been silent since it was raised"
-            if kind == "lost"
-            else f"CRASH DETECTED — candidate #{iid} was not retracted in time", rider)
+            escalated.append((row["id"], row["rider_id"], row["kind"], row["evidence"]))
+    for iid, rider, kind, evidence in escalated:
+        if kind == "silence":
+            try:
+                ev = json.loads(evidence or "{}") or {}
+            except ValueError:
+                ev = {}
+            said = (f"CRASH DETECTED — #{iid}: {ev.get('why', 'something violent')},"
+                    f" then no signal for {ev.get('quiet_s', '?')}s")
+        else:
+            said = f"CRASH DETECTED — candidate #{iid} was not retracted in time"
+        log("alert", "incident", said, rider)
     return len(escalated)
 
 
@@ -1366,6 +1423,9 @@ def state(dev: dict = Depends(device)):
                 "lat": last["lat"] if last else None,
                 "lon": last["lon"] if last else None,
                 "incident": incident_view(conn, openinc) if openinc else None,
+                # Unheard for a minute with a trip open, and whether it is past the
+                # two-minute alert (relay-15). Every screen draws its signal loss from this.
+                "signal": signal_view(conn, trip, openinc),
                 # For a viewer Mac with no archive of its own; the archivist prefers its own.
                 "previous_trip": None if trip else trip_summary(conn, prev),
             }

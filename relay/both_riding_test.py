@@ -7,8 +7,10 @@ so this proves that it holds when both trips are open together: neither rider's
 trip, telemetry, silence or incident leaks into the other's, and each rider's phone
 remains the other's Observer while riding itself.
 
-Starts a throwaway relay (plain HTTP, its own database, a 3-second confirm window)
-and touches nothing real. The deploy smoke test cannot do this: it is confined to
+Starts a throwaway relay (plain HTTP, its own database, a 3-second confirm window,
+and a signal loss shown at 35 s and alerted at 45 s instead of 60 and 120 — still both
+past the 30 s at which violence-then-silence alarms, as in production) and touches
+nothing real. The deploy smoke test cannot do this: it is confined to
 one test rider on the VPS.
 
     /usr/bin/python3 relay/both_riding_test.py      # uses the Mini's venv for the relay
@@ -17,6 +19,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -28,6 +31,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 VENV = Path.home() / "Library/Application Support/moto-tracker/venv/bin/python"
 PASS, FAIL = [], []
+SIGNAL_LOST_S, SIGNAL_ALERT_S = 35, 45
+OFFBIKE_SIGNAL_LOST_S = 60
 
 
 def check(label: str, ok: bool, detail="") -> bool:
@@ -50,7 +55,9 @@ def main() -> int:
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     env = dict(os.environ, RELAY_DB=str(work / "relay.db"), RELAY_HOST="127.0.0.1",
-               RELAY_PORT=str(port), RELAY_MIN_CONFIRM_S="3")
+               RELAY_PORT=str(port), RELAY_MIN_CONFIRM_S="3",
+               RELAY_SIGNAL_LOST_S=str(SIGNAL_LOST_S), RELAY_SIGNAL_ALERT_S=str(SIGNAL_ALERT_S),
+               RELAY_OFFBIKE_SIGNAL_LOST_S=str(OFFBIKE_SIGNAL_LOST_S))
     relay = subprocess.Popen([python, str(HERE / "relay.py")], env=env,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
@@ -215,17 +222,18 @@ def main() -> int:
         call("POST", "/incident/resolve", {"rider": "dana", "incident_id": j_inc, "resolution": "false_alarm"}, jk)
 
         # ---------------------------------------------------------------- a crash that silences the phone
-        # Losing the signal right after a violent reading, or right after a collapse in
-        # speed, is a crash that took the phone with it: it must still end in an alarm,
-        # not in a grey "Signal lost" (Jack, 2026-09-24). Each with the other rider
-        # riding on normally beside it.
+        # Losing the signal right after a violent reading is a crash that took the phone
+        # with it: it must still end in an alarm, not in "Signal lost" (Jack, 2026-09-24),
+        # with the other rider riding on normally beside it. Only violence counts: g-force
+        # or rotation outside the baseline (Jack, 2026-09-29).
         def silent_crash(label, victim, vtoken, other, otoken, packets):
-            print(f"{label} (about 35 s)")
+            print(f"{label} (about {SIGNAL_ALERT_S + 5} s)")
             for p in packets:
                 call("POST", "/position", dict({"rider": victim, "lat": 13.60, "lon": -89.2,
                                                 "accuracy": 5, "battery": 70, "mean_g": 1.0},
                                                **p), vtoken)
-            deadline = time.time() + 50
+            went = time.time()
+            deadline = went + 50
             seen_pending, inc = False, {}
             while time.time() < deadline:
                 pos(other, otoken, 13.72, 55)       # the other rider keeps riding and reporting
@@ -234,12 +242,23 @@ def main() -> int:
                 if inc.get("state") == "sos":
                     break
                 time.sleep(2)
+            took = time.time() - went
             check(f"{label}: a candidate is raised for the silence",
                   seen_pending or inc.get("kind") == "silence", inc)
             check(f"{label}: it escalates to a crash alarm",
                   inc.get("state") == "sos" and inc.get("display") == "red" and inc.get("kind") == "silence", inc)
+            # Violence then 30 s unheard alarms at once (Jack, 2026-09-29), not after a
+            # further window that nobody who could retract it is there to use.
+            check(f"{label}: within a few seconds of the thirty-second silence", took < 38, f"{took:.0f}s")
             check(f"{label}: the other rider has nothing raised", state()[other]["incident"] is None,
                   state()[other]["incident"])
+            # Unheard for long enough to alert, but the crash alarm is what sounds.
+            while time.time() - went < SIGNAL_ALERT_S + 2:
+                pos(other, otoken, 13.72, 55)
+                time.sleep(2)
+            sig = state()[victim].get("signal") or {}
+            check(f"{label}: the signal loss is shown, and its alert gives way to the crash alarm",
+                  sig.get("lost_s", 0) >= SIGNAL_ALERT_S and sig.get("alert") is False, sig)
             call("POST", "/incident/observer-close", {"incident_id": inc.get("id")}, otoken)
             call("POST", "/incident/resolve", {"rider": victim, "incident_id": inc.get("id"),
                                                "resolution": "ok"}, vtoken)
@@ -252,15 +271,81 @@ def main() -> int:
         ])
         check("the alarm says what it saw: the impact",
               inc.get("g") == 17.5 and inc.get("rot") == 11.0 and inc.get("speed_before") == 62, inc)
-        inc = silent_crash("a collapse in speed, then silence", "jack", rk, "dana", jk, [
-            {"speed": 72, "peak_g": 1.3, "peak_rot": 0.4},
-            {"speed": 70, "peak_g": 1.3, "peak_rot": 0.4},
-            {"speed": 38, "peak_g": 1.3, "peak_rot": 0.4},       # nothing violent recorded,
-            {"speed": 9, "peak_g": 1.3, "peak_rot": 0.4},        # just the bike stopping
-            {"speed": 3, "peak_g": 1.3, "peak_rot": 0.4},        # hard, then nothing
-        ])
-        check("the alarm says what it saw: the deceleration",
-              inc.get("speed_before") == 72 and (inc.get("speed_after") or 0) <= 8, inc)
+
+        # ---------------------------------------------------------------- signal loss is not a crash
+        # 2026-09-29: Dana went unheard for 3.5 minutes after 46 km/h, perfectly well,
+        # and the relay called it a crash. Signal loss is never on its own a reason to
+        # open an incident (Jack, 2026-09-29) — not after riding speed, and not after a
+        # stop with nothing violent in it either. It is shown instead: "Signal lost" after
+        # a minute, an alert after two.
+        print(f"signal loss with nothing violent, both at once (about {SIGNAL_ALERT_S + 5} s)")
+        for speed in (72, 70, 38, 9, 3):                  # Jack pulls up at a junction,
+            pos("jack", rk, 13.73, speed, peak_g=1.3, peak_rot=0.4)
+        for speed in (44, 46):                             # Dana rides into a dead spot
+            pos("dana", jk, 13.53, speed, peak_g=2.0, peak_rot=1.0)
+        went, raised, seen_lost = time.time(), [], {}
+        while time.time() - went < SIGNAL_ALERT_S + 4:
+            st = state()
+            for r in ("jack", "dana"):
+                if st[r]["incident"]:
+                    raised.append((r, st[r]["incident"]))
+                sig = st[r].get("signal")
+                if sig and not sig.get("alert"):
+                    seen_lost[r] = sig
+            time.sleep(2)
+        st = state()
+        check("a stop with nothing violent, then silence, raises nothing",
+              not [x for x in raised if x[0] == "jack"], raised)
+        check("riding speed, then silence, raises nothing (2026-09-29)",
+              not [x for x in raised if x[0] == "dana"], raised)
+        for r in ("jack", "dana"):
+            sig = st[r].get("signal") or {}
+            check(f"{r}: shown as signal lost first, before the alert",
+                  (seen_lost.get(r) or {}).get("lost_s", 0) >= SIGNAL_LOST_S, seen_lost.get(r))
+            check(f"{r}: then alerted, counted from the last packet",
+                  sig.get("alert") is True and sig.get("lost_s", 0) >= SIGNAL_ALERT_S
+                  and sig.get("since") == st[r]["last_received_at"], sig)
+        rdb = sqlite3.connect(work / "relay.db")
+        said = sorted(row for r in ("jack", "dana") for row in rdb.execute(
+            "SELECT rider_id, tag, COUNT(*) FROM events WHERE rider_id=? AND tag IN ('signal','no-signal')"
+            " AND ts >= ? GROUP BY tag", (r, st[r]["last_received_at"])))
+        check("the log says so once at a minute and once at two, for each, since the last packet",
+              said == [("dana", "no-signal", 1), ("dana", "signal", 1),
+                       ("jack", "no-signal", 1), ("jack", "signal", 1)], said)
+
+        her_last = st["dana"]["last_received_at"]
+        pos("dana", jk, 13.54, 47)                      # her signal comes back
+        st = state()
+        check("her packet clears her signal loss; his carries on",
+              st["dana"].get("signal") is None and (st["jack"].get("signal") or {}).get("alert") is True,
+              (st["dana"].get("signal"), st["jack"].get("signal")))
+        back = [m for (m,) in rdb.execute("SELECT message FROM events WHERE rider_id='dana'"
+                                          " AND tag='signal-ok' AND ts >= ?", (her_last,))]
+        check("and the log says how long she went unheard",
+              len(back) == 1 and back[0].startswith("signal back after 0:") and "47 km/h" in back[0], back)
+        pos("jack", rk, 13.74, 20)
+        check("his packet clears his", state()["jack"].get("signal") is None, state()["jack"].get("signal"))
+        rdb.close()
+
+        # ---------------------------------------------------------------- off the bike
+        # Off the bike the phone reports every 30 s and the risk is low, so a loss is
+        # shown only after OFFBIKE_SIGNAL_LOST_S (two minutes in production), not a
+        # minute (Jack, 2026-10-04).
+        print(f"signal loss off the bike (about {OFFBIKE_SIGNAL_LOST_S + 5} s)")
+        call("POST", "/ride/offbike", {"rider": "jack"}, rk)
+        pos("jack", rk, 13.75, 0)
+        went = time.time()
+        time.sleep(SIGNAL_ALERT_S - 2)                     # well past the riding thresholds
+        sig = state()["jack"].get("signal")
+        check("off the bike, nothing is shown at the riding thresholds", sig is None, sig)
+        while time.time() - went < OFFBIKE_SIGNAL_LOST_S + 3:
+            time.sleep(1)
+        sig = state()["jack"].get("signal") or {}
+        check("off the bike, the loss is shown and alerts at the longer threshold",
+              sig.get("lost_s", 0) >= OFFBIKE_SIGNAL_LOST_S and sig.get("alert") is True, sig)
+        pos("jack", rk, 13.75, 0)
+        check("and the next packet clears it", state()["jack"].get("signal") is None, state()["jack"].get("signal"))
+        call("POST", "/ride/start", {"rider": "jack"}, rk)
 
         # ---------------------------------------------------------------- back out of Hybrid
         print("back out of Hybrid")
